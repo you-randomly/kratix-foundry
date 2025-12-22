@@ -7,7 +7,7 @@ spec:
   licenseSecretRef:
     name: foundry-license-secret
     key: license-key
-  activeInstanceName: test-instance
+  activeInstanceName: standby-instance
 
 
   gateway:

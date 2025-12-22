@@ -98,4 +98,12 @@ spec:
 
                 image: kratix-foundry-license-configure:dev
                 imagePullPolicy: Never
-                command: ["/bin/bash", "-c", "/scripts/validate-license.sh && /scripts/generate-route.sh"]
+                command: ["python3", "/app/scripts/main.py"]
+                volumeMounts:
+                  - name: credentials
+                    mountPath: /etc/foundry/credentials
+                    readOnly: true
+            volumes:
+              - name: credentials
+                secret:
+                  secretName: foundry-credentials

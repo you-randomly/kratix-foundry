@@ -1,11 +1,15 @@
-FROM alpine:3.19
+FROM python:3.12-slim
 
-RUN apk add --no-cache bash curl jq yq && \
-    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
-    chmod +x kubectl && \
-    mv kubectl /usr/local/bin/
+# Install dependencies
+RUN pip install --no-cache-dir kratix-sdk kubernetes pyyaml requests
 
-COPY scripts/ /scripts/
-RUN chmod +x /scripts/*.sh
+# App structure
+WORKDIR /app
+COPY lib/foundry_lib /app/foundry_lib/
+COPY promises/foundry-instance/configure-pipeline/scripts/ /app/scripts/
 
+# Set working directory to /kratix for entrypoint
 WORKDIR /kratix
+ENV PYTHONPATH=/app
+
+ENTRYPOINT ["python3", "/app/scripts/main.py"]
