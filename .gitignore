@@ -2,3 +2,5 @@
 node_modules/
 .orbstack/
 recordings/
+__pycache__/
+*.pyc
