@@ -192,7 +192,9 @@ def create_foundry_instance(
     foundry_version: Optional[str] = None,
     storage_backend: Optional[str] = None,
     cpu: Optional[str] = None,
-    memory: Optional[str] = None
+    memory: Optional[str] = None,
+    created_by_id: Optional[str] = None,
+    created_by_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create a FoundryInstance resource.
     
@@ -228,10 +230,21 @@ def create_foundry_instance(
         'kind': 'FoundryInstance',
         'metadata': {
             'name': name,
-            'namespace': ns
+            'namespace': ns,
+            'annotations': {}
         },
         'spec': spec
     }
+    
+    # Add creator annotations if provided
+    if created_by_id:
+        instance['metadata']['annotations']['foundry.platform/created-by-id'] = created_by_id
+    if created_by_name:
+        instance['metadata']['annotations']['foundry.platform/created-by-name'] = created_by_name
+    
+    # Remove empty annotations dict
+    if not instance['metadata']['annotations']:
+        del instance['metadata']['annotations']
     
     try:
         result = k8s_api.create_namespaced_custom_object(
@@ -728,7 +741,9 @@ async def vtt_create(
         foundry_version=foundry_version,
         storage_backend=storage_backend.value if storage_backend else None,
         cpu=cpu,
-        memory=memory
+        memory=memory,
+        created_by_id=str(interaction.user.id),
+        created_by_name=str(interaction.user)
     )
     
     if result['success']:
