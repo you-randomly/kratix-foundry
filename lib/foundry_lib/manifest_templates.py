@@ -1,4 +1,15 @@
-def httproute_template(name, namespace, hostname, gateway_name, gateway_ns, backend_service):
+def httproute_template(name, namespace, hostname, gateway_name, gateway_ns, backend_service, backend_ns=None):
+    rule = {
+        "backendRefs": [
+            {
+                "name": backend_service,
+                "port": 80
+            }
+        ]
+    }
+    if backend_ns:
+        rule["backendRefs"][0]["namespace"] = backend_ns
+
     return {
         "apiVersion": "gateway.networking.k8s.io/v1beta1",
         "kind": "HTTPRoute",
@@ -18,16 +29,7 @@ def httproute_template(name, namespace, hostname, gateway_name, gateway_ns, back
                     "namespace": gateway_ns
                 }
             ],
-            "rules": [
-                {
-                    "backendRefs": [
-                        {
-                            "name": backend_service,
-                            "port": 80
-                        }
-                    ]
-                }
-            ]
+            "rules": [rule]
         }
     }
 

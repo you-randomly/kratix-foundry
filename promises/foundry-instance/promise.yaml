@@ -60,6 +60,10 @@ spec:
                 properties:
                   phase: {type: string}
                   isActive: {type: boolean}
+                  connectedPlayers: {type: integer}
+                  activeWorld: {type: boolean}
+                  lastSidecarUpdate: {type: string}
+                  error: {type: string}
                   conditions:
                     type: array
                     items:

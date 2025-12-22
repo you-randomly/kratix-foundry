@@ -17,24 +17,26 @@ def main():
         # Step 1: Validate License
         validate_license(resource)
         
-        # Step 2: Generate Routes
-        status = generate_routes(pipeline, resource)
+        # Get Admin Key for live checks
+        admin_key = None
+        admin_key_path = "/etc/foundry/credentials/adminPassword"
+        if os.path.exists(admin_key_path):
+            with open(admin_key_path, 'r') as f:
+                admin_key = f.read().strip()
+        else:
+            print("WARNING: Admin key not found at /etc/foundry/credentials/adminPassword")
+
+        # Step 2: Generate Routes (and handle switch logic)
+        status = generate_routes(pipeline, resource, admin_key=admin_key)
         
         # Step 3: Check player status of the active instance if it exists
         active_name = status.get("activeInstance")
-        if active_name:
+        if active_name and admin_key:
             print(f"Checking player status for active instance '{active_name}'...")
-            admin_key_path = "/etc/foundry/credentials/adminPassword"
-            if os.path.exists(admin_key_path):
-                with open(admin_key_path, 'r') as f:
-                    admin_key = f.read().strip()
-                
-                hostname = f"{active_name}.k8s.orb.local"
-                from foundry_lib.foundry_api import check_players
-                stats = check_players(hostname, admin_key)
-                status.update({"activeInstanceStats": stats})
-            else:
-                print("WARNING: Admin key not found at /etc/foundry/credentials/adminPassword")
+            hostname = f"foundry-{active_name}.{resource['metadata']['namespace']}.svc.cluster.local"
+            from foundry_lib.foundry_api import check_players
+            stats = check_players(hostname, admin_key)
+            status.update({"activeInstanceStats": stats})
 
         # Write status back to Kratix
         pipeline.write_status(status)

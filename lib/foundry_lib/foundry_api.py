@@ -6,8 +6,10 @@ def check_players(hostname, admin_key):
     Queries Foundry VTT API to check for connected players.
     Ported from check-players.sh
     """
-    # Internal connections (e.g. from sidecar) usually use HTTP and might have self-signed certs
-    if hostname.startswith("localhost") or hostname.startswith("127.0.0.1"):
+    # Internal connections (e.g. from sidecar or cluster services) usually use HTTP
+    is_internal = any(x in hostname for x in ["localhost", "127.0.0.1", ".svc.cluster.local", ".k8s.orb.local"])
+    
+    if is_internal:
         url = f"http://{hostname}/api/status"
     else:
         url = f"https://{hostname}/api/status"

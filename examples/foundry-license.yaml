@@ -8,8 +8,7 @@ spec:
     name: foundry-license-secret
     key: license-key
   activeInstanceName: standby-instance
-
-
+  switchMode: block
   gateway:
     parentRef:
       name: default-gateway
