@@ -41,18 +41,21 @@ intents = discord.Intents.default()
 # Create bot instance
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Kubernetes client (initialized on startup)
+# Kubernetes clients (initialized on startup)
 k8s_api: Optional[client.CustomObjectsApi] = None
+k8s_extensions_api: Optional[client.ApiextensionsV1Api] = None
 
 # Simple TTL cache for autocomplete (reduces API server load)
 CACHE_TTL_SECONDS = 5  # How long to cache results
 _instances_cache: Dict[str, Any] = {'data': None, 'timestamp': 0}
+_licenses_list_cache: Dict[str, Any] = {'data': None, 'timestamp': 0}
+_crd_schema_cache: Dict[str, Any] = {'data': None, 'timestamp': 0}
 _licenses_cache: Dict[str, Dict[str, Any]] = {}  # name -> {data, timestamp}
 
 
 def init_kubernetes() -> bool:
     """Initialize Kubernetes client. Returns True if successful."""
-    global k8s_api
+    global k8s_api, k8s_extensions_api
     try:
         # Try in-cluster config first, fall back to kubeconfig
         try:
@@ -63,11 +66,201 @@ def init_kubernetes() -> bool:
             print('Loaded kubeconfig from default location')
         
         k8s_api = client.CustomObjectsApi()
+        k8s_extensions_api = client.ApiextensionsV1Api()
         return True
     except Exception as e:
         print(f'WARNING: Failed to initialize Kubernetes client: {e}')
         print('Bot will run but Kubernetes commands will not work')
         return False
+
+
+def get_foundry_instance_crd_schema() -> Dict[str, Any]:
+    """Fetch the FoundryInstance CRD and extract spec properties schema.
+    
+    Returns dict with:
+      - properties: dict of field name -> {type, enum, default, description}
+    """
+    global _crd_schema_cache
+    
+    if not k8s_extensions_api:
+        return {'properties': {}}
+    
+    # Check cache (CRDs rarely change)
+    if _crd_schema_cache['data'] is not None:
+        age = time.time() - _crd_schema_cache['timestamp']
+        if age < 300:  # 5 minute cache for CRD schema
+            return _crd_schema_cache['data']
+    
+    try:
+        crd = k8s_extensions_api.read_custom_resource_definition(
+            name='foundryinstances.foundry.platform'
+        )
+        # Navigate to spec.versions[0].schema.openAPIV3Schema.properties.spec.properties
+        versions = crd.spec.versions
+        if not versions:
+            return {'properties': {}}
+        
+        schema = versions[0].schema
+        if not schema or not schema.open_apiv3_schema:
+            return {'properties': {}}
+        
+        spec_props = schema.open_apiv3_schema.properties.get('spec', {})
+        if hasattr(spec_props, 'properties'):
+            props = spec_props.properties or {}
+        else:
+            props = spec_props.get('properties', {})
+        
+        # Extract useful info from each property
+        result = {'properties': {}}
+        for name, prop in props.items():
+            prop_info = {}
+            if hasattr(prop, 'type'):
+                prop_info['type'] = prop.type
+            if hasattr(prop, 'enum') and prop.enum:
+                prop_info['enum'] = prop.enum
+            if hasattr(prop, 'default') and prop.default is not None:
+                prop_info['default'] = prop.default
+            if hasattr(prop, 'description'):
+                prop_info['description'] = prop.description
+            result['properties'][name] = prop_info
+        
+        _crd_schema_cache['data'] = result
+        _crd_schema_cache['timestamp'] = time.time()
+        return result
+    except Exception as e:
+        print(f'Error reading CRD schema: {e}')
+        return {'properties': {}}
+
+
+def get_storage_backend_choices() -> List[str]:
+    """Get valid storageBackend enum values from CRD."""
+    schema = get_foundry_instance_crd_schema()
+    props = schema.get('properties', {})
+    storage_prop = props.get('storageBackend', {})
+    return storage_prop.get('enum', ['nfs', 'pvc'])  # Fallback if CRD read fails
+
+
+def get_foundry_licenses(namespace: str = None, use_cache: bool = True) -> List[Dict[str, Any]]:
+    """Get all FoundryLicense resources.
+    
+    Args:
+        namespace: Namespace to search in (None for cluster-wide)
+        use_cache: If True, use cached results for autocomplete (5 second TTL)
+    """
+    global _licenses_list_cache
+    
+    if not k8s_api:
+        print('get_foundry_licenses: k8s_api not initialized')
+        return []
+    
+    # Check cache first (for autocomplete)
+    if use_cache and _licenses_list_cache['data'] is not None:
+        age = time.time() - _licenses_list_cache['timestamp']
+        if age < CACHE_TTL_SECONDS:
+            return _licenses_list_cache['data']
+    
+    try:
+        if namespace:
+            result = k8s_api.list_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural=CRD_LICENSE_PLURAL
+            )
+        else:
+            result = k8s_api.list_cluster_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                plural=CRD_LICENSE_PLURAL
+            )
+        items = result.get('items', [])
+        
+        # Update cache
+        _licenses_list_cache['data'] = items
+        _licenses_list_cache['timestamp'] = time.time()
+        
+        return items
+    except ApiException as e:
+        print(f'Error listing FoundryLicenses: {e}')
+        return []
+
+
+def create_foundry_instance(
+    name: str,
+    license_name: str,
+    namespace: Optional[str] = None,
+    foundry_version: Optional[str] = None,
+    storage_backend: Optional[str] = None,
+    cpu: Optional[str] = None,
+    memory: Optional[str] = None
+) -> Dict[str, Any]:
+    """Create a FoundryInstance resource.
+    
+    Returns dict with 'success', 'message', and optionally 'instance'.
+    """
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    
+    # Build the instance spec
+    spec = {
+        'licenseRef': {
+            'name': license_name
+        }
+    }
+    
+    # Add optional fields only if provided
+    if foundry_version:
+        spec['foundryVersion'] = foundry_version
+    if storage_backend:
+        spec['storageBackend'] = storage_backend
+    if cpu or memory:
+        spec['resources'] = {}
+        if cpu:
+            spec['resources']['cpu'] = cpu
+        if memory:
+            spec['resources']['memory'] = memory
+    
+    # Build the full resource
+    instance = {
+        'apiVersion': f'{CRD_GROUP}/{CRD_VERSION}',
+        'kind': 'FoundryInstance',
+        'metadata': {
+            'name': name,
+            'namespace': ns
+        },
+        'spec': spec
+    }
+    
+    try:
+        result = k8s_api.create_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_INSTANCE_PLURAL,
+            body=instance
+        )
+        return {
+            'success': True,
+            'message': f'Created instance "{name}" in namespace "{ns}"',
+            'instance': result
+        }
+    except ApiException as e:
+        if e.status == 409:
+            return {'success': False, 'message': f'Instance "{name}" already exists'}
+        elif e.status == 422:
+            # Validation error - extract message
+            try:
+                import json
+                body = json.loads(e.body)
+                msg = body.get('message', str(e))
+            except:
+                msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+            return {'success': False, 'message': f'Validation error: {msg}'}
+        else:
+            error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+            return {'success': False, 'message': f'Failed to create instance: {error_msg}'}
 
 
 def get_foundry_instances(namespace: str = None, use_cache: bool = True) -> List[Dict[str, Any]]:
@@ -321,8 +514,6 @@ async def on_ready():
     # Sync commands to guild for faster updates during development
     if GUILD_ID:
         guild = discord.Object(id=int(GUILD_ID))
-        # Clear existing commands first to ensure autocomplete updates are picked up
-        bot.tree.clear_commands(guild=guild)
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
         print(f'Commands synced to guild {GUILD_ID} ({len(synced)} commands)')
@@ -445,6 +636,7 @@ async def vtt_status_instance_autocomplete(
     """Autocomplete callback for instance names."""
     try:
         instances = get_foundry_instances()
+        print(f'Instance autocomplete: got {len(instances)} instances')
         if not instances:
             print(f'Autocomplete: No instances found')
             return []
@@ -474,33 +666,116 @@ async def vtt_status_instance_autocomplete(
 
 @bot.tree.command(name='vtt-create', description='Create a new Foundry instance')
 @app_commands.describe(
-    name='Name for the new instance',
-    license_name='License to associate with this instance'
+    name='Name for the new instance (lowercase, alphanumeric, hyphens allowed)',
+    license_name='License to associate with this instance',
+    foundry_version='Foundry VTT version (e.g., 12.331)',
+    storage_backend='Storage type for instance data',
+    cpu='CPU resource limit (e.g., 500m, 1)',
+    memory='Memory resource limit (e.g., 512Mi, 1Gi)'
 )
+@app_commands.choices(storage_backend=[
+    app_commands.Choice(name='nfs', value='nfs'),
+    app_commands.Choice(name='pvc', value='pvc'),
+])
 async def vtt_create(
     interaction: discord.Interaction, 
     name: str,
-    license_name: str
+    license_name: str,
+    foundry_version: Optional[str] = None,
+    storage_backend: Optional[app_commands.Choice[str]] = None,
+    cpu: Optional[str] = None,
+    memory: Optional[str] = None
 ):
     """
     Create a new FoundryInstance resource.
     """
+    print(f'vtt_create called with name={name}, license_name={license_name}')
     await interaction.response.defer(thinking=True)
     
-    # TODO: Create FoundryInstance via Kubernetes API
-    embed = discord.Embed(
-        title='🎲 Creating Instance',
-        description=f'Creating instance **{name}** with license **{license_name}**...',
-        color=discord.Color.orange()
+    if not k8s_api:
+        embed = discord.Embed(
+            title='❌ Kubernetes Not Connected',
+            description='The bot is not connected to a Kubernetes cluster.',
+            color=discord.Color.red()
+        )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    # Validate that the license exists
+    license_obj = get_foundry_license(license_name, use_cache=False)
+    if not license_obj:
+        # List available licenses for the error message
+        available = get_foundry_licenses()
+        license_names = [lic['metadata']['name'] for lic in available]
+        embed = discord.Embed(
+            title='❌ License Not Found',
+            description=f'License **{license_name}** does not exist.',
+            color=discord.Color.red()
+        )
+        if license_names:
+            embed.add_field(
+                name='Available Licenses',
+                value=', '.join(license_names) or 'None',
+                inline=False
+            )
+        await interaction.followup.send(embed=embed)
+        return
+    
+    # Create the instance
+    result = create_foundry_instance(
+        name=name,
+        license_name=license_name,
+        foundry_version=foundry_version,
+        storage_backend=storage_backend.value if storage_backend else None,
+        cpu=cpu,
+        memory=memory
     )
-    embed.add_field(
-        name='⚠️ Not Implemented',
-        value='This command is a placeholder. Kubernetes integration coming soon.',
-        inline=False
-    )
-    embed.set_footer(text='Powered by Kratix Foundry')
+    
+    if result['success']:
+        embed = discord.Embed(
+            title='✅ Instance Created',
+            description=result['message'],
+            color=discord.Color.green()
+        )
+        embed.add_field(name='Name', value=name, inline=True)
+        embed.add_field(name='License', value=license_name, inline=True)
+        if foundry_version:
+            embed.add_field(name='Version', value=foundry_version, inline=True)
+        if storage_backend:
+            embed.add_field(name='Storage', value=storage_backend.value.upper(), inline=True)
+        embed.set_footer(text='The Kratix pipeline will provision the instance shortly')
+    else:
+        embed = discord.Embed(
+            title='❌ Creation Failed',
+            description=result['message'],
+            color=discord.Color.red()
+        )
     
     await interaction.followup.send(embed=embed)
+
+
+@vtt_create.autocomplete('license_name')
+async def vtt_create_license_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete callback for license names."""
+    try:
+        licenses = get_foundry_licenses()
+        if not licenses:
+            return []
+        
+        choices = []
+        for lic in licenses:
+            name = lic['metadata']['name']
+            # Filter by current input (case-insensitive)
+            if current.lower() in name.lower():
+                choices.append(app_commands.Choice(name=name, value=name))
+        
+        return choices[:25]  # Discord limit
+    except Exception as e:
+        print(f'License autocomplete error: {e}')
+        return []
 
 
 @bot.tree.command(name='vtt-update', description='Update a Foundry instance')
