@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: foundry-campaign-beta
+  namespace: foundry-vtt
+  labels:
+    app: foundry-vtt
+    instance: campaign-beta
+spec:
+  selector:
+    app: foundry-vtt
+    instance: campaign-beta
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 30000
+  type: ClusterIP

@@ -1,0 +1,15 @@
+# Example FoundryLicense resource
+# This represents a purchased Foundry VTT license
+apiVersion: foundry.platform/v1alpha1
+kind: FoundryLicense
+metadata:
+  name: primary-license
+spec:
+  # Reference to a Secret containing the license key
+  # The Secret should be created via External Secrets or manually
+  licenseSecretRef:
+    name: foundry-license-secrets
+    key: license-key
+  
+  # Optional: identify the license owner
+  owner: "gamemaster@example.com"

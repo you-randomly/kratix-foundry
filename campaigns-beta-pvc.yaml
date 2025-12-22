@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: foundry-campaign-beta-data
+  namespace: foundry-vtt
+  labels:
+    app: foundry-vtt
+    instance: campaign-beta
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,8 @@
+apiVersion: demo.kratix.io/v1alpha1
+kind: NginxApp
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  replicas: 2
+  message: "Hello World from my custom Nginx app!"

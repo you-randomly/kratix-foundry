@@ -1,0 +1,17 @@
+apiVersion: foundry.platform/v1alpha1
+kind: FoundryInstance
+metadata:
+  name: campaign-beta
+  namespace: foundry-vtt
+spec:
+  licenseRef:
+    name: primary-license
+  requestActive: false
+  switchoverMode: block
+  foundryVersion: "13.347.0"
+  subdomain: campaign-beta
+  storageBackend: pvc
+  plugins:
+    mode: new
+  worlds:
+    mode: new

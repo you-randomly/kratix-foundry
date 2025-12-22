@@ -1,0 +1,38 @@
+# Example: Instance with cloned world
+# This instance clones a world from another instance at creation time
+apiVersion: foundry.platform/v1alpha1
+kind: FoundryInstance
+metadata:
+  name: campaign-backup
+  namespace: foundry-vtt
+spec:
+  licenseRef:
+    name: primary-license
+  
+  requestActive: false
+  
+  # Block switchover by default (protect this backup instance)
+  switchoverMode: block
+  
+  foundryVersion: "13.347.0"
+  subdomain: backup
+  
+  resources:
+    cpu: "100m"
+    memory: "256Mi"
+  
+  # Clone plugins from main-campaign (one-time copy)
+  plugins:
+    mode: cloned
+    cloneFromInstance: main-campaign
+  
+  # Clone worlds from main-campaign (one-time copy)
+  worlds:
+    mode: cloned
+    cloneFromInstance: main-campaign
+  
+  gateway:
+    parentRef:
+      name: cilium-gateway-external
+      namespace: default
+    dnsTarget: "212.69.47.125"

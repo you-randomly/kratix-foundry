@@ -1,0 +1,15 @@
+apiVersion: foundry.platform/v1alpha1
+kind: FoundryInstance
+metadata:
+  name: test-instance
+  namespace: default
+spec:
+  licenseRef:
+    name: test-license
+  foundryVersion: "13.347.0"
+  resources:
+    cpu: "100m"
+    memory: "256Mi"
+  storageBackend: pvc
+
+

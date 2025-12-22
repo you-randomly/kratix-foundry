@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: foundry-vtt
+---
+# Standby page deployment - handles all standby instance routes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foundry-standby-page
+  namespace: foundry-vtt
+  labels:
+    app: foundry-standby-page
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: foundry-standby-page
+  template:
+    metadata:
+      labels:
+        app: foundry-standby-page
+    spec:
+      serviceAccountName: foundry-controller
+      containers:
+      - name: standby-page
+        image: ghcr.io/you-randomly/foundry-platform/standby-page:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 64Mi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: foundry-standby-page
+  namespace: foundry-vtt
+spec:
+  selector:
+    app: foundry-standby-page
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 8080
+    - name: api
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
+  type: ClusterIP
+---
+# ServiceAccount for the controller to manage FoundryInstance resources
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foundry-controller
+  namespace: foundry-vtt
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: foundry-controller
+rules:
+- apiGroups: ["foundry.platform"]
+  resources: ["foundryinstances", "foundrylicenses"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["foundry.platform"]
+  resources: ["foundryinstances/status", "foundrylicenses/status"]
+  verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: foundry-controller
+subjects:
+- kind: ServiceAccount
+  name: foundry-controller
+  namespace: foundry-vtt
+roleRef:
+  kind: ClusterRole
+  name: foundry-controller
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Foundry VTT - Instance Standby</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="icon">⏸️</div>
+      <h1>Instance in Standby</h1>
+      <p class="instance-name" id="instanceName">Loading...</p>
+
+      <div class="status-section">
+        <p>This Foundry VTT instance is currently in <strong>standby mode</strong>.</p>
+        <p>Only one instance per license can be active at a time.</p>
+      </div>
+
+      <div class="active-instance" id="activeSection">
+        <h2>Currently Active</h2>
+        <a href="#" id="activeLink" class="active-link">
+          <span id="activeName">Loading...</span>
+          <span class="arrow">→</span>
+        </a>
+      </div>
+
+      <!-- Activation currently manual only -->
+      <div class="action-section" style="display: none;">
+        <button id="requestBtn" class="request-btn" onclick="requestActivation()">
+          Request Activation
+        </button>
+        <p class="hint">This will switch to this instance if no players are connected to the active instance.</p>
+      </div>
+
+      <div class="manual-notice" style="margin-top: 2rem; color: var(--text-secondary); font-size: 0.9rem;">
+        <p>To activate this instance, please update the configuration in your Git repository.</p>
+      </div>
+
+      <div id="statusMessage" class="status-message hidden"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,132 @@
+# Kratix Local State Management
+# Consolidated configuration for MinIO-backed StateStore on a single-cluster setup
+#
+# This file contains:
+# 1. Namespace for Kratix platform components
+# 2. MinIO credentials secret
+# 3. MinIO deployment and service
+# 4. Bucket creation job
+# 5. BucketStateStore (Kratix state storage)
+# 6. Destination (where Kratix schedules workloads)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kratix-platform-system
+---
+# MinIO credentials - used by MinIO server and Kratix
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-creds
+  namespace: kratix-platform-system
+type: Opaque
+stringData:
+  accessKeyID: minioadmin
+  secretAccessKey: minioadmin
+---
+# MinIO Object Storage - acts as the GitOps state store
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio-dev
+  namespace: kratix-platform-system
+spec:
+  selector:
+    matchLabels:
+      app: minio
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:RELEASE.2025-02-18T16-25-55Z
+        args: ["server", "/data", "--console-address", ":9090"]
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: minio-creds
+              key: accessKeyID
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minio-creds
+              key: secretAccessKey
+        ports:
+        - containerPort: 9000
+        - containerPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: kratix-platform-system
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 9000
+      protocol: TCP
+      name: api
+  selector:
+    app: minio
+---
+# Job to create the bucket (idempotent)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-kratix-bucket
+  namespace: kratix-platform-system
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      containers:
+      - name: create-bucket
+        image: minio/mc:RELEASE.2024-03-03T00-13-08Z
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          # Wait for MinIO to be ready
+          until mc alias set local http://minio:80 minioadmin minioadmin; do
+            echo "Waiting for MinIO..."
+            sleep 2
+          done
+          mc mb --ignore-existing local/kratix-bucket
+          echo "Bucket 'kratix-bucket' ready!"
+      restartPolicy: OnFailure
+---
+# BucketStateStore - tells Kratix where to write pipeline outputs
+apiVersion: platform.kratix.io/v1alpha1
+kind: BucketStateStore
+metadata:
+  name: default
+spec:
+  bucketName: kratix-bucket
+  endpoint: minio.kratix-platform-system.svc.cluster.local
+  insecure: true
+  secretRef:
+    name: minio-creds
+    namespace: kratix-platform-system
+  authMethod: accessKey
+---
+# Destination - the local cluster where workloads are scheduled
+# Flux watches the MinIO bucket and applies manifests here
+apiVersion: platform.kratix.io/v1alpha1
+kind: Destination
+metadata:
+  name: local-cluster
+  labels:
+    environment: dev
+spec:
+  stateStoreRef:
+    kind: BucketStateStore
+    name: default
+  filepath:
+    mode: none
+  path: /

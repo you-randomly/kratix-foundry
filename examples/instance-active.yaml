@@ -1,0 +1,46 @@
+# Example: Active FoundryInstance
+# This instance is requesting to be the active (internet-accessible) instance
+apiVersion: foundry.platform/v1alpha1
+kind: FoundryInstance
+metadata:
+  name: main-campaign
+  namespace: foundry-vtt
+spec:
+  # Reference to the license this instance uses
+  licenseRef:
+    name: primary-license
+  
+  # Request this instance to be active
+  requestActive: true
+  
+  # How this instance can be displaced (block = reject if players connected)
+  switchoverMode: block
+  
+  # Foundry VTT version
+  foundryVersion: "13.347.0"
+  
+  # Subdomain: main-campaign.foundry.lab.jake-watson.co.uk
+  subdomain: main-campaign
+  
+  # Resources
+  resources:
+    cpu: "200m"
+    memory: "512Mi"
+  
+  # Instance data stored on NFS (path auto-generated from name)
+  # nfsBasePath: "/volume1/foundry/instances/main-campaign"
+  
+  # Plugins: new empty folder (default)
+  plugins:
+    mode: new
+  
+  # Worlds: new empty folder (default)
+  worlds:
+    mode: new
+  
+  # Gateway configuration
+  gateway:
+    parentRef:
+      name: cilium-gateway-external
+      namespace: default
+    dnsTarget: "212.69.47.125"

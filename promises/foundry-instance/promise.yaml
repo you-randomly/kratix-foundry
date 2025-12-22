@@ -1,0 +1,190 @@
+apiVersion: platform.kratix.io/v1alpha1
+kind: Promise
+metadata:
+  name: foundry-instance
+spec:
+  destinationSelectors:
+  - matchLabels:
+      environment: dev
+  api:
+    apiVersion: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    metadata:
+      name: foundryinstances.foundry.platform
+    spec:
+      group: foundry.platform
+      names:
+        kind: FoundryInstance
+        plural: foundryinstances
+        singular: foundryinstance
+      scope: Namespaced
+      versions:
+      - name: v1alpha1
+        schema:
+          openAPIV3Schema:
+            type: object
+            properties:
+              spec:
+                type: object
+                required:
+                - licenseRef
+                properties:
+                  licenseRef:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                  foundryVersion:
+                    type: string
+                  resources:
+                    type: object
+                    properties:
+                      cpu: {type: string}
+                      memory: {type: string}
+                  nfsBasePath:
+                    type: string
+                  storageBackend:
+                    type: string
+                    enum: [nfs, pvc]
+                    default: nfs
+                  proxySSL:
+                    type: boolean
+                    default: true
+                  proxyPort:
+                    type: integer
+                    default: 443
+
+              status:
+                type: object
+                properties:
+                  phase: {type: string}
+                  isActive: {type: boolean}
+                  conditions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type: {type: string}
+                        status: {type: string}
+                        message: {type: string}
+        served: true
+        storage: true
+  dependencies: []
+  workflows:
+    resource:
+      configure:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: instance-configure
+          spec:
+            rbac:
+              permissions:
+                - apiGroups: ["foundry.platform"]
+                  resources: ["foundrylicenses"]
+                  verbs: ["get", "list", "watch", "patch"]
+
+            containers:
+              - name: configure
+
+                image: kratix-foundry-instance-configure:dev
+                imagePullPolicy: Never
+                command: ["/bin/bash", "-c", "/scripts/check-license.sh && /scripts/setup-nfs-volume.sh && /scripts/generate-manifests.sh && /scripts/cleanup-for-flux.sh"]
+
+    promise:
+      configure:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: promise-configure
+          spec:
+            containers:
+              - name: setup-dependencies
+                image: ghcr.io/syntasso/kratix-pipeline-utility:v0.0.1
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -ex
+                    
+                    # Create the foundry-vtt namespace
+                    cat > /kratix/output/namespace.yaml <<EOF
+                    apiVersion: v1
+                    kind: Namespace
+                    metadata:
+                      name: foundry-vtt
+                      labels:
+                        managed-by: kratix
+                        promise: foundry-instance
+                    EOF
+                    
+                    # Create shared standby page service (if not already done via standby-page manifests)
+                    cat > /kratix/output/standby-page.yaml <<EOF
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: foundry-standby-page
+                      namespace: foundry-vtt
+                    spec:
+                      replicas: 1
+                      selector:
+                        matchLabels:
+                          app: foundry-standby-page
+                      template:
+                        metadata:
+                          labels:
+                            app: foundry-standby-page
+                        spec:
+                          containers:
+                          - name: nginx
+                            image: nginx:alpine
+                            ports:
+                            - containerPort: 80
+                            volumeMounts:
+                            - name: html
+                              mountPath: /usr/share/nginx/html
+                          volumes:
+                          - name: html
+                            configMap:
+                              name: standby-page-html
+                    ---
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: foundry-standby-page
+                      namespace: foundry-vtt
+                    spec:
+                      selector:
+                        app: foundry-standby-page
+                      ports:
+                        - port: 80
+                          targetPort: 80
+                      type: ClusterIP
+                    ---
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: standby-page-html
+                      namespace: foundry-vtt
+                    data:
+                      index.html: |
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                          <title>Foundry VTT - Standby</title>
+                          <style>
+                            body { font-family: sans-serif; text-align: center; padding: 50px; background: #1a1a2e; color: #eee; }
+                            h1 { color: #e94560; }
+                          </style>
+                        </head>
+                        <body>
+                          <h1>Foundry Instance is on Standby</h1>
+                          <p>This instance is not currently active.</p>
+                          <p>Please contact your administrator to activate it.</p>
+                        </body>
+                        </html>
+                    EOF
+                    
+                    echo "Promise dependencies configured"
+

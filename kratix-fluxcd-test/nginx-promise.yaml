@@ -1,0 +1,169 @@
+apiVersion: platform.kratix.io/v1alpha1
+kind: Promise
+metadata:
+  name: nginx-app
+  labels:
+    kratix.io/promise-version: v0.1.0
+spec:
+  destinationSelectors:
+  - matchLabels:
+      environment: dev
+  api:
+    apiVersion: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    metadata:
+      name: nginxapps.demo.kratix.io
+    spec:
+      group: demo.kratix.io
+      names:
+        kind: NginxApp
+        plural: nginxapps
+        singular: nginxapp
+      scope: Namespaced
+      versions:
+        - name: v1alpha1
+          schema:
+            openAPIV3Schema:
+              type: object
+              properties:
+                spec:
+                  type: object
+                  properties:
+                    replicas:
+                      type: integer
+                      default: 1
+                      description: Number of nginx replicas
+                    message:
+                      type: string
+                      default: "Hello from Kratix!"
+                      description: Message to display on the nginx page
+          served: true
+          storage: true
+  workflows:
+    resource:
+      configure:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: instance-configure
+          spec:
+            containers:
+              - image: ghcr.io/syntasso/kratix-pipeline-utility:v0.0.1
+                name: generate-nginx
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -ex
+                    
+                    # Read values from the resource request
+                    name=$(yq '.metadata.name' /kratix/input/object.yaml)
+                    namespace=$(yq '.metadata.namespace // "default"' /kratix/input/object.yaml)
+                    replicas=$(yq '.spec.replicas // 1' /kratix/input/object.yaml)
+                    message=$(yq '.spec.message // "Hello from Kratix!"' /kratix/input/object.yaml)
+                    
+                    # Generate ConfigMap with custom message
+                    cat > /kratix/output/configmap.yaml <<EOF
+                    apiVersion: v1
+                    kind: ConfigMap
+                    metadata:
+                      name: nginx-${name}-html
+                      namespace: ${namespace}
+                    data:
+                      index.html: |
+                        <!DOCTYPE html>
+                        <html>
+                        <head><title>Nginx App: ${name}</title></head>
+                        <body>
+                          <h1>${message}</h1>
+                          <p>Deployed via Kratix Promise</p>
+                          <p>Instance: ${name}</p>
+                        </body>
+                        </html>
+                    EOF
+                    
+                    # Generate Deployment
+                    cat > /kratix/output/deployment.yaml <<EOF
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: nginx-${name}
+                      namespace: ${namespace}
+                      labels:
+                        app: nginx-app
+                        instance: ${name}
+                    spec:
+                      replicas: ${replicas}
+                      selector:
+                        matchLabels:
+                          app: nginx-app
+                          instance: ${name}
+                      template:
+                        metadata:
+                          labels:
+                            app: nginx-app
+                            instance: ${name}
+                        spec:
+                          containers:
+                          - name: nginx
+                            image: nginx:alpine
+                            ports:
+                            - containerPort: 80
+                            volumeMounts:
+                            - name: html
+                              mountPath: /usr/share/nginx/html
+                          volumes:
+                          - name: html
+                            configMap:
+                              name: nginx-${name}-html
+                    EOF
+                    
+                    # Generate Service
+                    cat > /kratix/output/service.yaml <<EOF
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: nginx-${name}
+                      namespace: ${namespace}
+                      labels:
+                        app: nginx-app
+                        instance: ${name}
+                    spec:
+                      selector:
+                        app: nginx-app
+                        instance: ${name}
+                      ports:
+                        - port: 80
+                          targetPort: 80
+                      type: ClusterIP
+                    EOF
+                    
+                    echo "Generated manifests for nginx-${name}"
+    promise:
+      configure:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: promise-configure
+          spec:
+            containers:
+              - image: ghcr.io/syntasso/kratix-pipeline-utility:v0.0.1
+                name: setup-namespace
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -ex
+                    
+                    # Create a namespace for all nginx apps (dependency)
+                    cat > /kratix/output/namespace.yaml <<EOF
+                    apiVersion: v1
+                    kind: Namespace
+                    metadata:
+                      name: nginx-apps
+                      labels:
+                        managed-by: kratix
+                        promise: nginx-app
+                    EOF
+                    
+                    echo "Promise dependencies configured"

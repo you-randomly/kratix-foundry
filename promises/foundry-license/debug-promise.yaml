@@ -1,0 +1,16 @@
+apiVersion: platform.kratix.io/v1alpha1
+kind: Promise
+metadata:
+  name: foundry-license-debug
+spec:
+  api:
+    apiVersion: foundry.platform/v1alpha1
+    kind: FoundryLicense
+    metadata:
+      name: foundry-license
+    spec:
+      type: object
+      properties:
+        owner:
+          type: string
+  dependencies: []
