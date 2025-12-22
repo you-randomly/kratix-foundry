@@ -98,15 +98,19 @@ plugins:
   # sharedNfsPath: "/volume1/foundry/shared/plugins-pool-a"
 ```
 
+## Real-time Status Monitoring
+
+Each instance automatically receives a `monitor` sidecar container that polls the Foundry VTT API every 60 seconds.
+
+### Reported Fields
+
+| Field | Description |
+|-------|-------------|
+| `connectedPlayers` | Number of currently logged-in users |
+| `activeWorld` | Name of the active world (e.g. `standby-world`) |
+| `lastSidecarUpdate` | Timestamp of the last successful poll |
+
 ## Switchover Modes
-
-The `switchoverMode` controls how THIS instance can be displaced when another requests activation:
-
-| Mode | Behavior |
-|------|----------|
-| `block` | Reject if players are connected (default) |
-| `queue` | Queue request, auto-switch when session ends |
-| `force` | Allow immediate switchover |
 
 ## Directory Structure
 
@@ -126,29 +130,23 @@ ruby-cosmos/
 
 ## Building Pipeline Images
 
+Both pipelines are implemented in Python. Since they share a common library (`lib/foundry_lib`), you must build them from the repository root:
+
 ```bash
 # License pipeline
-cd promises/foundry-license/configure-pipeline
-docker build -t ghcr.io/you-randomly/foundry-platform/license-pipeline:latest .
+docker build -t kratix-foundry-license-configure:dev -f promises/foundry-license/configure-pipeline/Dockerfile .
 
 # Instance pipeline
-cd promises/foundry-instance/configure-pipeline
-docker build -t ghcr.io/you-randomly/foundry-platform/instance-pipeline:latest .
-
-# Standby page
-cd standby-page
-docker build -t ghcr.io/you-randomly/foundry-platform/standby-page:latest .
+docker build -t kratix-foundry-instance-configure:dev -f promises/foundry-instance/configure-pipeline/Dockerfile .
 ```
 
-### Local Testing (Kind)
+### Local Testing (Orbstack/Kind)
 
-Since you are testing locally, you don't need to push to GHCR yet. Instead, load the images directly into your Kind cluster:
+For local testing, the images built above are automatically available if using Orbstack's built-in Kubernetes. If using Kind, load them manually:
 
 ```bash
-# Load images into Kind
-kind load docker-image ghcr.io/you-randomly/foundry-platform/license-pipeline:latest --name kratix-test
-kind load docker-image ghcr.io/you-randomly/foundry-platform/instance-pipeline:latest --name kratix-test
-kind load docker-image ghcr.io/you-randomly/foundry-platform/standby-page:latest --name kratix-test
+kind load docker-image kratix-foundry-license-configure:dev --name kratix-test
+kind load docker-image kratix-foundry-instance-configure:dev --name kratix-test
 ```
 
 *Note: Replace `kratix-test` with your actual Kind cluster name.*

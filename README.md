@@ -22,21 +22,21 @@ kubectl get kustomization -n flux-system
 
 ## Architecture
 
-```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         Kind Cluster                                │
+│                         Kubernetes Cluster                          │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  FoundryLicense ──▶ Kratix ──▶ MinIO Bucket ◀── FluxCD             │
 │  FoundryInstance              (kratix)           │                  │
 │                                                  ▼                  │
-│                                          foundry-vtt namespace      │
-│                                          ├── Deployment             │
+│                                          Deployment (w/ Monitor)    │
 │                                          ├── Service                │
 │                                          ├── HTTPRoute              │
 │                                          └── DNSEndpoint            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+The platform now uses **Python-based pipelines** and a **Real-time Status Monitor** sidecar for improved reliability and visibility.
 
 ## Promises
 
@@ -52,12 +52,12 @@ Deploys a Foundry VTT instance with:
 
 ## Development
 
+Both pipelines are implemented in Python. Since they share a common library (`lib/foundry_lib`), you must build them from the repository root:
+
 ```bash
-# Rebuild pipeline images and reload into Kind
-docker build -t kratix-foundry-instance-configure:dev promises/foundry-instance/configure-pipeline
-docker build -t kratix-foundry-license-configure:dev promises/foundry-license/configure-pipeline
-kind load docker-image kratix-foundry-instance-configure:dev --name kratix-foundry-dev
-kind load docker-image kratix-foundry-license-configure:dev --name kratix-foundry-dev
+# Rebuild pipeline images (run from root)
+docker build -t kratix-foundry-instance-configure:dev -f promises/foundry-instance/configure-pipeline/Dockerfile .
+docker build -t kratix-foundry-license-configure:dev -f promises/foundry-license/configure-pipeline/Dockerfile .
 
 # Re-apply Promises
 kubectl apply -f promises/foundry-license/promise.yaml

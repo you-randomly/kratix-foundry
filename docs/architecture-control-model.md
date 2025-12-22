@@ -82,21 +82,7 @@ sequenceDiagram
 ## Technical Implementation Details
 
 ### License "Touch" Mechanism
-To ensure zero-wait routing when a new instance is created, the `FoundryInstance` pipeline performs a `kubectl patch` on its parent `FoundryLicense`:
-
-```bash
-kubectl patch foundrylicense "$LICENSE_NAME" \
-  --type=merge \
-  -p "{\"metadata\":{\"annotations\":{\"foundry.platform/reconcile\":\"$(date +%s)\"}}}"
-```
-
-This forces Kratix to immediately execute the License's `validate-license` pipeline, which then detects the new instance and generates its identity route.
+To ensure zero-wait routing when a new instance is created, the `FoundryInstance` pipeline performs a "touch" on its parent `FoundryLicense` using the Kubernetes Python client to update its annotations. This forces Kratix to immediately execute the License's configuration pipeline, which then detects the new instance and generates its identity route.
 
 ### Master Routing Logic
-The license uses a `kubectl list` with a `jq` filter to find its subordinates:
-
-```bash
-INSTANCES=$(kubectl get foundryinstance -n $NS -o json | jq -c --arg L $LICENSE '.items[] | select(.spec.licenseRef.name == $L)')
-```
-
-For each match, it produces an `HTTPRoute` manifest with a conditional `backendRef`.
+The license pipeline use the `kubernetes` Python client to list all instances associated with the license. For each match, it generates an `HTTPRoute` manifest with a conditional `backendRef` (pointing to either the instance service or the standby page).

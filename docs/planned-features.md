@@ -34,13 +34,11 @@ stateDiagram-v2
 
 ## Foundry API Integration
 
-### Player Session Monitoring
+### Player Session Monitoring (Implemented ✅)
 
-- Query Foundry's `/api/status` endpoint to detect logged-in players
-- Inform instance switchover decisions:
-  - Warn/block if players are connected to the active instance
-  - Optional grace period before forced switchover
-- Surface player count in `FoundryInstance.status`
+- **Real-time monitor**: A sidecar container queries Foundry's `/api/status` endpoint every 60 seconds.
+- **Enhanced Visibility**: Surfaces player count and `activeWorld` (world name) in `FoundryInstance.status`.
+- **Status Patching**: Updates the Kratix resource status directly via the Kubernetes API.
 
 ```yaml
 status:
@@ -156,15 +154,16 @@ spec:
 
 ### Bash vs Python SDK
 
-Given the complexity of these planned features, **Python + Kratix SDK is strongly recommended**:
+### Python SDK Migration (Complete ✅)
 
-| Feature | Bash Challenge | Python Advantage |
-|---------|---------------|------------------|
-| Volume state machine | Complex conditional logic | Clean state pattern implementation |
-| Foundry API calls | `curl` + `jq` chaining | `requests` + native JSON handling |
-| Discord integration | Not practical | Discord.py or similar libraries |
-| RBAC logic | Very difficult | Natural Python data structures |
-| Unit testing | Nearly impossible | pytest for pipeline logic |
+The platform has been successfully migrated to the Python Kratix SDK.
+
+| Feature | Status | Implementation |
+|---------|--------|----------------|
+| Volume state machine | In Progress | Ready for implementation in `lib/foundry_lib/` |
+| Foundry API calls | Complete ✅ | Powered by `requests` in `lib/foundry_lib/foundry_api.py` |
+| Discord integration | Planned | Will share the `foundry_lib` library |
+| Unit testing | Ready | Logic is now testable via `pytest` |
 
 > [!IMPORTANT]
-> The Discord bot will be a separate Python service regardless. Having pipelines in Python enables shared libraries for Foundry API interactions, validation logic, and data models.
+> The sidecar monitor now provides high-frequency updates that weren't possible with the previous architecture.
