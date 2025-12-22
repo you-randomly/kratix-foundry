@@ -61,7 +61,8 @@ spec:
                   phase: {type: string}
                   isActive: {type: boolean}
                   connectedPlayers: {type: integer}
-                  activeWorld: {type: boolean}
+                  activeWorld: {type: string}
+                  worldActive: {type: boolean}
                   lastSidecarUpdate: {type: string}
                   error: {type: string}
                   conditions:

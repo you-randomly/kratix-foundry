@@ -62,7 +62,7 @@ status:
 ## Discord Integration
 
 > [!TIP]
-> Maintained as a **separate project** for cleaner separation of concerns.
+> Located in `discord-bot/` within this monorepo, sharing `lib/foundry_lib`.
 
 ### Bot Commands
 

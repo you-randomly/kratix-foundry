@@ -1,0 +1,18 @@
+[project]
+name = "kratix-foundry-discord-bot"
+version = "0.1.0"
+description = "Discord bot for managing Foundry VTT instances via Kratix"
+requires-python = ">=3.10"
+dependencies = [
+    "discord.py>=2.3.0",
+    "python-dotenv>=1.0.0",
+    "kubernetes>=28.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]

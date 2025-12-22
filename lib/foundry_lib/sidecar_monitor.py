@@ -46,7 +46,8 @@ def monitor_loop():
             body = {
                 "status": {
                     "connectedPlayers": stats.get("connectedPlayers", 0),
-                    "activeWorld": stats.get("worldActive", False),
+                    "activeWorld": stats.get("worldName"),  # Store the world name, not boolean
+                    "worldActive": stats.get("worldActive", False),  # Keep boolean for compatibility
                     "lastSidecarUpdate": stats.get("checkedAt"),
                     "error": stats.get("error") # Track if there was an error
                 }

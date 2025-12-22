@@ -23,9 +23,11 @@ def check_players(hostname, admin_key):
         response.raise_for_status()
         data = response.json()
         
+        world = data.get("world")
         return {
             "connectedPlayers": data.get("users", 0),
-            "worldActive": data.get("world", False),
+            "worldActive": bool(world),  # Convert to boolean for CRD schema
+            "worldName": world if world else None,  # Keep actual world name
             "checkedAt": datetime.now().isoformat()
         }
     except Exception as e:

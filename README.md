@@ -68,6 +68,24 @@ kubectl apply -f examples/foundry-license.yaml
 kubectl apply -f examples/foundry-instance.yaml
 ```
 
+### Discord Bot
+
+The Discord bot lives in `discord-bot/` and shares the `lib/foundry_lib` library with the pipelines.
+
+```bash
+# Set up the bot
+cd discord-bot
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Configure (copy .env.example to .env and add your bot token)
+cp .env.example .env
+
+# Run the bot
+python bot.py
+```
+
 ## Cleanup
 
 ```bash

@@ -81,6 +81,7 @@ spec:
                     properties:
                       connectedPlayers: {type: integer}
                       worldActive: {type: boolean}
+                      worldName: {type: string}
                       checkedAt: {type: string}
                       error: {type: string}
                   registeredInstances:
