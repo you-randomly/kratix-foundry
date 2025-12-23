@@ -2,7 +2,7 @@ apiVersion: foundry.platform/v1alpha1
 kind: FoundryLicense
 metadata:
   name: test-license
-  namespace: default
+  namespace: foundry-vtt
 spec:
   licenseSecretRef:
     name: foundry-license-secret
@@ -11,7 +11,7 @@ spec:
   switchMode: block
   gateway:
     parentRef:
-      name: default-gateway
+      name: foundry-vtt-gateway
       namespace: foundry-vtt
     dnsTarget: "192.168.139.2"
   owner: test@example.com

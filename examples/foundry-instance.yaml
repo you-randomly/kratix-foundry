@@ -2,7 +2,7 @@ apiVersion: foundry.platform/v1alpha1
 kind: FoundryInstance
 metadata:
   name: test-instance
-  namespace: default
+  namespace: foundry-vtt
 spec:
   licenseRef:
     name: test-license

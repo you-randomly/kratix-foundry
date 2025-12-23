@@ -34,5 +34,5 @@ spec:
   gateway:
     parentRef:
       name: cilium-gateway-external
-      namespace: default
+      namespace: foundry-vtt
     dnsTarget: "212.69.47.125"

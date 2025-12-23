@@ -27,7 +27,7 @@ load_dotenv()
 # Bot configuration
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
 GUILD_ID = os.getenv('DISCORD_GUILD_ID')
-FOUNDRY_NAMESPACE = os.getenv('FOUNDRY_NAMESPACE', 'default')
+FOUNDRY_NAMESPACE = os.getenv('FOUNDRY_NAMESPACE', 'foundry-vtt')
 
 # Kubernetes API configuration
 CRD_GROUP = 'foundry.platform'
