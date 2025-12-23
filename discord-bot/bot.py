@@ -443,6 +443,73 @@ def activate_instance(instance_name: str, namespace: str = None) -> Dict[str, An
         return {'success': False, 'message': f'Failed to patch license: {error_msg}', 'license_name': license_name}
 
 
+def deactivate_instance(instance_name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Deactivate a FoundryInstance by setting its license's activeInstanceName to 'standby'.
+    
+    Returns dict with 'success', 'message', and optionally 'license_name'.
+    """
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    
+    # Get the instance to find its license
+    instance = get_foundry_instance(instance_name, ns)
+    if not instance:
+        return {'success': False, 'message': f'Instance "{instance_name}" not found'}
+    
+    # Get the license name from the instance
+    license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
+    if not license_name:
+        return {'success': False, 'message': f'Instance "{instance_name}" has no licenseRef'}
+    license_obj = get_foundry_license(license_name, ns)
+    if not license_obj:
+        return {'success': False, 'message': f'License "{license_name}" not found'}
+
+    # Check if already inactive
+    current_active = license_obj.get('spec', {}).get('activeInstanceName')
+    if current_active != instance_name:
+        return {'success': True, 'message': f'Instance "{instance_name}" is not currently active', 'license_name': license_name}
+    
+    # Use merge patch with None to remove the activeInstanceName field
+    try:
+        patch_body = {
+            'spec': {
+                'activeInstanceName': None  # None/null removes the field in merge patch
+            }
+        }
+        k8s_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_LICENSE_PLURAL,
+            name=license_name,
+            body=patch_body
+        )
+        return {
+            'success': True, 
+            'message': f'Deactivated "{instance_name}" - all instances now on standby',
+            'license_name': license_name
+        }
+    except ApiException as e:
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        if e.status == 422:
+            # Try to extract the actual validation message
+            try:
+                import json
+                body = json.loads(e.body)
+                detail = body.get('message', error_msg)
+            except:
+                detail = error_msg
+            return {
+                'success': False, 
+                'message': f'Validation error: {detail}',
+                'license_name': license_name
+            }
+        return {'success': False, 'message': f'Failed to patch license: {error_msg}', 'license_name': license_name}
+
+
 def format_instance_embed(instance: Dict[str, Any], is_active_override: Optional[bool] = None) -> discord.Embed:
     """Format a FoundryInstance as a Discord embed.
     
@@ -800,6 +867,7 @@ async def vtt_create_license_autocomplete(
 )
 @app_commands.choices(action=[
     app_commands.Choice(name='activate', value='activate'),
+    app_commands.Choice(name='deactivate', value='deactivate'),
 ])
 async def vtt_update(
     interaction: discord.Interaction, 
@@ -842,6 +910,30 @@ async def vtt_update(
                 embed.add_field(name='License', value=result['license_name'], inline=True)
         
         await interaction.followup.send(embed=embed)
+    
+    elif action.value == 'deactivate':
+        result = deactivate_instance(instance)
+        
+        if result['success']:
+            embed = discord.Embed(
+                title='🟠 Instance Deactivated',
+                description=result['message'],
+                color=discord.Color.orange()
+            )
+            if 'license_name' in result:
+                embed.add_field(name='License', value=result['license_name'], inline=True)
+            embed.set_footer(text='The Kratix pipeline will update routes shortly')
+        else:
+            embed = discord.Embed(
+                title='❌ Deactivation Failed',
+                description=result['message'],
+                color=discord.Color.red()
+            )
+            if 'license_name' in result:
+                embed.add_field(name='License', value=result['license_name'], inline=True)
+        
+        await interaction.followup.send(embed=embed)
+    
     else:
         embed = discord.Embed(
             title='❓ Unknown Action',
@@ -849,6 +941,38 @@ async def vtt_update(
             color=discord.Color.orange()
         )
         await interaction.followup.send(embed=embed)
+
+
+@vtt_update.autocomplete('instance')
+async def vtt_update_instance_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete for instance names - shows all instances with status."""
+    try:
+        instances = get_foundry_instances()
+        if not instances:
+            return [app_commands.Choice(name='No instances available', value='__none__')]
+        
+        choices = []
+        for inst in instances:
+            name = inst['metadata']['name']
+            # Filter by current input
+            if current.lower() in name.lower():
+                # Add status indicator
+                license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
+                license_obj = get_foundry_license(license_name) if license_name else None
+                is_active = False
+                if license_obj:
+                    is_active = license_obj.get('spec', {}).get('activeInstanceName') == name
+                
+                status_emoji = '🟢' if is_active else '🟠'
+                choices.append(app_commands.Choice(name=f'{status_emoji} {name}', value=name))
+        
+        return choices[:25]
+    except Exception as e:
+        print(f'Update autocomplete error: {e}')
+        return []
 
 
 @bot.tree.command(name='vtt-delete', description='Delete a Foundry instance')
