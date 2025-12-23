@@ -8,10 +8,10 @@ spec:
     name: foundry-license-secret
     key: license-key
   activeInstanceName: standby-instance
-  switchMode: block
+  switchMode: force
   gateway:
     parentRef:
-      name: foundry-vtt-gateway
+      name: default-gateway
       namespace: foundry-vtt
     dnsTarget: "192.168.139.2"
   owner: test@example.com

@@ -108,7 +108,12 @@ log_success "Infrastructure configured"
 log_step "Building Foundry pipeline images..."
 docker build -t kratix-foundry-instance-configure:dev -f "$PROJECT_ROOT/promises/foundry-instance/configure-pipeline/Dockerfile" "$PROJECT_ROOT"
 docker build -t kratix-foundry-license-configure:dev -f "$PROJECT_ROOT/promises/foundry-license/configure-pipeline/Dockerfile" "$PROJECT_ROOT"
+docker build -t ghcr.io/you-randomly/foundry-platform/standby-page:dev "$PROJECT_ROOT/standby-page"
 log_success "Images built"
+
+# Apply Standby Page
+log_step "Applying Standby Page..."
+kubectl apply -f "$PROJECT_ROOT/manifests/foundry-standby-page.yaml"
 
 # Apply Foundry Promises
 log_step "Applying Foundry Promises..."

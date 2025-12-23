@@ -49,7 +49,7 @@ def check_license(pipeline, resource: dict) -> bool:
         patch = {
             "metadata": {
                 "annotations": {
-                    "foundry.platform/reconcile": str(int(time.time()))
+                    "kratix.io/manual-reconciliation": str(int(time.time()))
                 }
             }
         }

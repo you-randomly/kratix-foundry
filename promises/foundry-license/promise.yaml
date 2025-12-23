@@ -24,8 +24,6 @@ spec:
           openAPIV3Schema:
             type: object
             x-kubernetes-validations:
-              - rule: "!(has(oldSelf.status) && has(oldSelf.status.activeInstanceStats) && oldSelf.status.activeInstanceStats.connectedPlayers > 0 && oldSelf.spec.switchMode == 'block' && self.spec.activeInstanceName != oldSelf.spec.activeInstanceName)"
-                message: "Switching active instance is blocked because players are connected and switchMode is 'block'"
               - rule: "!has(self.spec.activeInstanceName) || self.spec.activeInstanceName.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')"
                 message: "activeInstanceName must be a valid Kubernetes name"
             properties:

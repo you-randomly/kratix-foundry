@@ -38,6 +38,8 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
     warning = None
     active_instance_name = desired_active_name
 
+    ANNOTATION_SCHEDULED_DELETE = 'foundry.platform/scheduled-delete-at'
+
     # Check if we are trying to switch instances
     if current_active_name and desired_active_name and current_active_name != desired_active_name:
         if switch_mode == "block":
@@ -82,8 +84,24 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
         if instance_license != license_name:
             continue
             
-        found_any = True
+        # Check if instance is marked for deletion
+        instance_annotations = instance.get("metadata", {}).get("annotations", {})
+        scheduled_delete = instance_annotations.get(ANNOTATION_SCHEDULED_DELETE)
+        
         name = instance["metadata"]["name"]
+        
+        if scheduled_delete:
+            print(f"  Instance '{name}' is scheduled for deletion, forcing standby")
+            
+            # If this instance is supposed to be active, block it
+            if name == active_instance_name:
+                print(f"  WARNING: Active instance '{name}' is scheduled for deletion, blocking activation")
+                active_instance_name = current_active_name if current_active_name != name else ""
+                warning = f"Instance '{name}' is scheduled for deletion and cannot be active"
+            
+            # Proceed to generate route (as standby)
+            
+        found_any = True
         hostname = f"{name}.k8s.orb.local"
         
         state = "standby"

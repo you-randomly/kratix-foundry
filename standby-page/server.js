@@ -98,13 +98,17 @@ async function findLicenseForInstance(instanceName, credentials) {
         }
     }
 
+    // If instance still not found (404), return specific status
     if (!instance) {
-        return { error: 'Instance not found' };
+        return { status: 'deleted', error: 'Instance not found' };
     }
 
     const licenseName = instance.spec?.licenseRef?.name;
+    // Check for scheduled deletion
+    const scheduledDeleteAt = instance.metadata?.annotations?.['foundry.platform/scheduled-delete-at'];
+
     if (!licenseName) {
-        return { error: 'Instance has no license reference' };
+        return { error: 'Instance has no license reference', scheduledDeleteAt };
     }
 
     // Get the license (try same namespace as instance first)
@@ -122,7 +126,7 @@ async function findLicenseForInstance(instanceName, credentials) {
     }
 
     if (license.code === 404) {
-        return { error: 'License not found' };
+        return { error: 'License not found', scheduledDeleteAt };
     }
 
     return {
@@ -131,7 +135,8 @@ async function findLicenseForInstance(instanceName, credentials) {
         activeInstance: license.spec?.activeInstanceName || null,
         connectedPlayers: license.status?.activeInstanceStats?.connectedPlayers ?? null,
         worldActive: license.status?.activeInstanceStats?.worldActive ?? null,
-        checkedAt: license.status?.activeInstanceStats?.checkedAt || null
+        checkedAt: license.status?.activeInstanceStats?.checkedAt || null,
+        scheduledDeleteAt: scheduledDeleteAt || null
     };
 }
 

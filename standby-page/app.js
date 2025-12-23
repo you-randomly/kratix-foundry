@@ -18,6 +18,26 @@ async function init() {
     const response = await fetch(`${API_BASE}/status?instance=${instanceName}`);
     const data = await response.json();
 
+    if (data.status === 'deleted' || data.error === 'Instance not found') {
+      document.getElementById('statusSection').innerHTML =
+        '<p style="color: var(--error)">This instance has been deleted.</p>';
+      document.getElementById('instanceName').style.color = 'var(--text-secondary)';
+      document.getElementById('activeSection').style.display = 'none';
+      return;
+    }
+
+    if (data.scheduledDeleteAt) {
+      const date = new Date(data.scheduledDeleteAt).toLocaleString();
+      const warningDiv = document.createElement('div');
+      warningDiv.className = 'status-message warning';
+      warningDiv.style.display = 'block';
+      warningDiv.style.marginBottom = '1rem';
+      warningDiv.innerHTML = `⚠️ Scheduled for deletion on <br><strong>${date}</strong>`;
+
+      const card = document.querySelector('.card');
+      card.insertBefore(warningDiv, card.querySelector('.instance-name').nextSibling);
+    }
+
     if (data.activeInstance) {
       document.getElementById('activeName').textContent = data.activeInstance;
 

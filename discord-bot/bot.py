@@ -9,11 +9,13 @@ import os
 import sys
 import time
 import asyncio
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Callable, Awaitable
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -35,6 +37,7 @@ CRD_GROUP = 'foundry.platform'
 CRD_VERSION = 'v1alpha1'
 CRD_INSTANCE_PLURAL = 'foundryinstances'
 CRD_LICENSE_PLURAL = 'foundrylicenses'
+ANNOTATION_SCHEDULED_DELETE = 'foundry.platform/scheduled-delete-at'
 
 # Set up intents (only default - no privileged intents needed for slash commands)
 intents = discord.Intents.default()
@@ -581,6 +584,142 @@ def format_instance_embed(instance: Dict[str, Any], is_active_override: Optional
         embed.set_footer(text=f'Namespace: {namespace}')
     
     return embed
+    
+class DeleteManagementView(discord.ui.View):
+    """View with buttons to cancel or extend a scheduled deletion."""
+    def __init__(self, instance_name: str, owner_id: str, timeout: float = 60):
+        super().__init__(timeout=timeout)
+        self.instance_name = instance_name
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if str(interaction.user.id) != self.owner_id:
+            await interaction.response.send_message("Only the owner of this instance can manage its deletion.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Cancel Deletion", style=discord.ButtonStyle.success)
+    async def cancel_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Removes the scheduled deletion annotation."""
+        # Get instance to find namespace
+        inst = get_foundry_instance(self.instance_name)
+        if not inst:
+            await interaction.response.send_message(f"Instance **{self.instance_name}** not found.", ephemeral=True)
+            return
+
+        namespace = inst['metadata']['namespace']
+        
+        # Merge patch to remove annotation
+        patch_body = {
+            'metadata': {
+                'annotations': {
+                    ANNOTATION_SCHEDULED_DELETE: None
+                }
+            }
+        }
+        
+        try:
+            k8s_api.patch_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural=CRD_INSTANCE_PLURAL,
+                name=self.instance_name,
+                body=patch_body
+            )
+            
+            embed = discord.Embed(
+                title='🛡️ Deletion Cancelled',
+                description=f'The scheduled deletion for instance **{self.instance_name}** has been cancelled.',
+                color=discord.Color.blue()
+            )
+            await interaction.response.edit_message(embed=embed, view=None)
+        except ApiException as e:
+            await interaction.response.send_message(f"Failed to cancel deletion: {e}", ephemeral=True)
+
+    @discord.ui.button(label="Extend (7 Days)", style=discord.ButtonStyle.secondary)
+    async def extend_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Updates the scheduled deletion date to 7 days from now."""
+        # Get instance to find namespace
+        inst = get_foundry_instance(self.instance_name)
+        if not inst:
+            await interaction.response.send_message(f"Instance **{self.instance_name}** not found.", ephemeral=True)
+            return
+
+        namespace = inst['metadata']['namespace']
+        
+        # Calculate new deletion date
+        new_date = datetime.now(timezone.utc) + timedelta(days=7)
+        new_date_str = new_date.isoformat()
+        
+        patch_body = {
+            'metadata': {
+                'annotations': {
+                    ANNOTATION_SCHEDULED_DELETE: new_date_str
+                }
+            }
+        }
+        
+        try:
+            k8s_api.patch_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural=CRD_INSTANCE_PLURAL,
+                name=self.instance_name,
+                body=patch_body
+            )
+            
+            embed = discord.Embed(
+                title='⏳ Deletion Extended',
+                description=f'The grace period for instance **{self.instance_name}** has been extended by 7 days.',
+                color=discord.Color.orange()
+            )
+            embed.add_field(name='New Deletion Date', value=f"UTC {new_date_str}")
+            await interaction.response.edit_message(embed=embed, view=None)
+        except ApiException as e:
+            await interaction.response.send_message(f"Failed to extend deletion: {e}", ephemeral=True)
+
+
+@tasks.loop(hours=1)
+async def cleanup_expired_deletions():
+    """Background task to delete instances whose grace period has expired."""
+    if not k8s_api:
+        return
+        
+    print("Checking for expired instance deletions...")
+    instances = get_foundry_instances(use_cache=False)
+    now = datetime.now(timezone.utc)
+    
+    for inst in instances:
+        annotations = inst.get('metadata', {}).get('annotations', {})
+        scheduled_at_str = annotations.get(ANNOTATION_SCHEDULED_DELETE)
+        
+        if not scheduled_at_str:
+            continue
+            
+        try:
+            # Parse the scheduled date.
+            scheduled_at = datetime.fromisoformat(scheduled_at_str)
+            
+            # Ensure scheduled_at is timezone-aware if it's not (though isoformat from now(utc) should be)
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
+            
+            if now >= scheduled_at:
+                name = inst['metadata']['name']
+                namespace = inst['metadata']['namespace']
+                print(f"Deleting expired instance: {name} in {namespace}")
+                
+                k8s_api.delete_namespaced_custom_object(
+                    group=CRD_GROUP,
+                    version=CRD_VERSION,
+                    namespace=namespace,
+                    plural=CRD_INSTANCE_PLURAL,
+                    name=name
+                )
+        except Exception as e:
+            print(f"Error processing cleanup for {inst.get('metadata', {}).get('name')}: {e}")
 
 
 async def wait_for_resource_condition(
@@ -635,6 +774,11 @@ async def on_ready():
     else:
         synced = await bot.tree.sync()
         print(f'Commands synced globally ({len(synced)} commands)')
+    
+    # Start background tasks
+    if not cleanup_expired_deletions.is_running():
+        cleanup_expired_deletions.start()
+        print('Started cleanup_expired_deletions background task')
 
 
 
@@ -727,7 +871,7 @@ async def vtt_status(interaction: discord.Interaction, instance: Optional[str] =
             if license_name:
                 license_obj = get_foundry_license(license_name)
                 if license_obj:
-                    active_instance = license_obj.get('spec', {}).get('activeInstanceName')
+                    active_instance = license_obj.get('status', {}).get('activeInstance') or license_obj.get('spec', {}).get('activeInstanceName')
                     is_active_from_license = (active_instance == instance)
             
             embed = format_instance_embed(inst, is_active_override=is_active_from_license)
@@ -760,7 +904,7 @@ async def vtt_status(interaction: discord.Interaction, instance: Optional[str] =
             if license_name and license_name not in license_active_map:
                 license_obj = get_foundry_license(license_name)
                 if license_obj:
-                    license_active_map[license_name] = license_obj.get('spec', {}).get('activeInstanceName')
+                    license_active_map[license_name] = license_obj.get('status', {}).get('activeInstance') or license_obj.get('spec', {}).get('activeInstanceName')
         
         # Count active instances using license as source of truth
         active_count = 0
@@ -1014,6 +1158,21 @@ async def vtt_update(
         return
     
     if action.value == 'activate':
+        # Check if instance is scheduled for deletion
+        inst = get_foundry_instance(instance)
+        if inst:
+            annotations = inst.get('metadata', {}).get('annotations', {})
+            scheduled_at = annotations.get(ANNOTATION_SCHEDULED_DELETE)
+            if scheduled_at:
+                embed = discord.Embed(
+                    title='🚫 Activation Blocked',
+                    description=f'Instance **{instance}** is scheduled for deletion on {scheduled_at} and cannot be activated.',
+                    color=discord.Color.red()
+                )
+                embed.add_field(name='How to fix', value='Cancel the deletion first using `/vtt-delete`', inline=False)
+                await interaction.followup.send(embed=embed)
+                return
+
         result = activate_instance(instance)
         
         if result['success']:
@@ -1233,30 +1392,90 @@ async def vtt_delete(interaction: discord.Interaction, instance: str):
         await interaction.followup.send(embed=embed)
         return
     
-    # Delete the instance
+    # Check if already marked for deletion
+    scheduled_at = annotations.get(ANNOTATION_SCHEDULED_DELETE)
+    
+    if scheduled_at:
+        # Prompt to cancel or extend
+        embed = discord.Embed(
+            title='⚠️ Instance Scheduled for Deletion',
+            description=(
+                f'Instance **{instance}** is already scheduled for deletion.\n\n'
+                f'**Scheduled Date:** UTC {scheduled_at}\n\n'
+                'Would you like to cancel the deletion or extend the grace period?'
+            ),
+            color=discord.Color.yellow()
+        )
+        view = DeleteManagementView(instance, caller_id)
+        await interaction.followup.send(embed=embed, view=view)
+        return
+    
+    # Mark for deletion
     try:
-        k8s_api.delete_namespaced_custom_object(
+        # Safety Check: Is it active?
+        license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
+        if license_name:
+            lic = get_foundry_license(license_name, use_cache=False)
+            if lic and lic.get('spec', {}).get('activeInstanceName') == instance:
+                # Force deactivate first
+                deactivate_result = deactivate_instance(instance)
+                if not deactivate_result['success']:
+                    embed = discord.Embed(
+                        title='❌ Deletion Failed',
+                        description=f'Failed to deactivate active instance before deletion: {deactivate_result["message"]}',
+                        color=discord.Color.red()
+                    )
+                    await interaction.followup.send(embed=embed)
+                    return
+                
+                # Notify user about deactivation
+                embed = discord.Embed(
+                    title='🟠 Instance Deactivated',
+                    description=f'Instance **{instance}** was active and has been deactivated to prepare for deletion.',
+                    color=discord.Color.orange()
+                )
+                await interaction.followup.send(embed=embed)
+
+        # Calculate deletion date (7 days from now)
+        deletion_date = datetime.now(timezone.utc) + timedelta(days=7)
+        deletion_date_str = deletion_date.isoformat()
+        
+        patch_body = {
+            'metadata': {
+                'annotations': {
+                    ANNOTATION_SCHEDULED_DELETE: deletion_date_str
+                }
+            }
+        }
+        
+        k8s_api.patch_namespaced_custom_object(
             group=CRD_GROUP,
             version=CRD_VERSION,
             namespace=inst['metadata']['namespace'],
             plural=CRD_INSTANCE_PLURAL,
-            name=instance
+            name=instance,
+            body=patch_body
         )
+        
         embed = discord.Embed(
-            title='🗑️ Instance Deleted',
-            description=f'Instance **{instance}** has been deleted.',
-            color=discord.Color.green()
+            title='� Deletion Scheduled',
+            description=(
+                f'Instance **{instance}** has been marked for deletion.\n\n'
+                f'It will be automatically removed in **7 days** (UTC {deletion_date_str}) '
+                'unless cancelled or extended.'
+            ),
+            color=discord.Color.orange()
         )
-        embed.set_footer(text='Kratix will clean up associated resources')
+        embed.set_footer(text='Run this command again to manage the deletion')
+        await interaction.followup.send(embed=embed)
     except ApiException as e:
         error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
         embed = discord.Embed(
-            title='❌ Deletion Failed',
-            description=f'Failed to delete instance: {error_msg}',
+            title='❌ Scheduling Failed',
+            description=f'Failed to schedule deletion: {error_msg}',
             color=discord.Color.red()
         )
-    
-    await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 @vtt_delete.autocomplete('instance')

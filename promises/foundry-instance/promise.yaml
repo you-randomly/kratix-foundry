@@ -110,6 +110,33 @@ spec:
               - name: license
                 secret:
                   secretName: foundry-license
+      delete:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: instance-delete
+          spec:
+            rbac:
+              permissions:
+                - apiGroups: ["foundry.platform"]
+                  resources: ["foundrylicenses"]
+                  verbs: ["get", "list", "patch"]
+                - apiGroups: [""]
+                  resources: ["persistentvolumeclaims"]
+                  verbs: ["get", "delete"]
+            containers:
+              - name: cleanup
+                image: kratix-foundry-instance-configure:dev
+                imagePullPolicy: Never
+                command: ["python3", "/app/scripts/delete.py"]
+                volumeMounts:
+                  - name: credentials
+                    mountPath: /etc/foundry/credentials
+                    readOnly: true
+            volumes:
+              - name: credentials
+                secret:
+                  secretName: foundry-credentials
 
     promise:
       configure:
