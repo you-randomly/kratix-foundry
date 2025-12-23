@@ -13,17 +13,35 @@ function getInstanceName() {
 async function init() {
   const instanceName = getInstanceName();
   document.getElementById('instanceName').textContent = instanceName;
-  
+
   try {
     const response = await fetch(`${API_BASE}/status?instance=${instanceName}`);
     const data = await response.json();
-    
+
     if (data.activeInstance) {
       document.getElementById('activeName').textContent = data.activeInstance;
-      document.getElementById('activeLink').href = 
-        `https://${data.activeInstance}.foundry.lab.jake-watson.co.uk`;
+
+      // Update link to use the same domain but different subdomain
+      const currentHost = window.location.hostname;
+      const domain = currentHost.substring(currentHost.indexOf('.'));
+      document.getElementById('activeLink').href = `http://${data.activeInstance}${domain}`;
+
+      // Update player count if available
+      if (data.connectedPlayers !== null && data.connectedPlayers !== undefined) {
+        const playerSection = document.getElementById('playerSection');
+        playerSection.classList.remove('hidden');
+        document.getElementById('playerCount').textContent = data.connectedPlayers;
+
+        if (data.connectedPlayers > 0) {
+          document.getElementById('playerStatus').textContent = 'Players connected';
+          document.getElementById('playerStatus').style.color = 'var(--accent)';
+        } else {
+          document.getElementById('playerStatus').textContent = 'No players connected';
+          document.getElementById('playerStatus').style.color = 'var(--text-secondary)';
+        }
+      }
     } else {
-      document.getElementById('activeSection').innerHTML = 
+      document.getElementById('activeSection').innerHTML =
         '<p style="color: var(--warning)">No active instance found</p>';
     }
   } catch (error) {
@@ -37,12 +55,12 @@ async function requestActivation() {
   const instanceName = getInstanceName();
   const btn = document.getElementById('requestBtn');
   const statusEl = document.getElementById('statusMessage');
-  
+
   btn.disabled = true;
   btn.textContent = 'Requesting...';
   statusEl.className = 'status-message info';
   statusEl.textContent = 'Checking for active players...';
-  
+
   try {
     const response = await fetch(`${API_BASE}/activate`, {
       method: 'POST',
@@ -51,9 +69,9 @@ async function requestActivation() {
       },
       body: JSON.stringify({ instance: instanceName }),
     });
-    
+
     const data = await response.json();
-    
+
     if (response.ok) {
       statusEl.className = 'status-message success';
       statusEl.textContent = 'Activation successful! Redirecting...';
@@ -63,7 +81,7 @@ async function requestActivation() {
     } else if (response.status === 409) {
       // Blocked due to players
       statusEl.className = 'status-message warning';
-      statusEl.textContent = data.message || 
+      statusEl.textContent = data.message ||
         `Blocked: ${data.connectedPlayers} players connected to ${data.activeInstance}`;
       btn.disabled = false;
       btn.textContent = 'Request Activation';

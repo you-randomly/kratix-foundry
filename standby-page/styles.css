@@ -203,3 +203,25 @@ h1 {
 .loading {
   animation: pulse 1.5s ease-in-out infinite;
 }
+
+.player-stats {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.player-stats .count {
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: var(--accent);
+  margin-right: 0.5rem;
+}
+
+.player-stats.hidden {
+  display: none;
+}
+
