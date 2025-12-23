@@ -604,73 +604,61 @@ async def on_ready():
 
 
 
-@bot.tree.command(name='vtt-help', description='Show setup guide and command help')
+@bot.tree.command(name='vtt-help', description='How to use the self-service Foundry platform')
 async def vtt_help(interaction: discord.Interaction):
     """
-    Display a comprehensive setup guide for the Kratix Foundry platform.
+    Display guidance on using the Foundry VTT self-service platform.
     """
     embed = discord.Embed(
-        title='🚀 Kratix Foundry Setup Guide',
-        description='Follow these steps to set up your own self-service Foundry platform.',
+        title='🎲 Foundry VTT Self-Service Guide',
+        description=(
+            'Welcome to the self-service Foundry platform! This bot allows you to create, '
+            'manage, and switch between multiple Foundry instances.'
+        ),
         color=discord.Color.blue()
     )
     
     embed.add_field(
-        name='1️⃣ Infrastructure Setup',
+        name='🟢 Active vs 🟠 Standby',
         value=(
-            '• Ensure you have a Kubernetes cluster (Kind, Orbstack, etc.)\n'
-            '• Install **Gateway API** (Envoy, Istio, or similar)\n'
-            '• Install **Kratix**: `kubectl apply -f manifests/kratix.yaml`'
+            'Due to license restrictions, only **one instance per license** can be active at a time.\n'
+            '• **Active**: Fully accessible via its URL.\n'
+            '• **Standby**: Shows a status page with the current active instance and player count.'
         ),
         inline=False
     )
     
     embed.add_field(
-        name='2️⃣ Install Promises',
+        name='🎮 Essential Commands',
         value=(
-            'Install the core platform definitions:\n'
-            '```bash\n'
-            'kubectl apply -f promises/foundry-license/promise.yaml\n'
-            'kubectl apply -f promises/foundry-instance/promise.yaml\n'
-            'kubectl apply -f manifests/foundry-standby-page.yaml\n'
-            '```'
+            '• `/vtt-status`: View all instances and see who is currently live.\n'
+            '• `/vtt-create`: Create a new instance (world) with custom specs.\n'
+            '• `/vtt-update`: Switch the license to a different instance.\n'
+            '• `/vtt-delete`: Remove an instance (only for the creator).'
         ),
         inline=False
     )
     
     embed.add_field(
-        name='3️⃣ Configure Discord Bot',
+        name='🔄 Switching Instances',
         value=(
-            '• Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications)\n'
-            '• Copy `.env.example` to `.env` and add your `DISCORD_BOT_TOKEN` and `DISCORD_GUILD_ID`.\n'
-            '• Set `FOUNDRY_NAMESPACE=foundry-vtt` in your `.env`.'
+            'Use `/vtt-update` with the `activate` action to go live. '
+            'If players are currently connected to the active instance, '
+            'the switch may be blocked to prevent disruption.'
         ),
         inline=False
     )
     
     embed.add_field(
-        name='4️⃣ Create a License',
+        name='🛠️ Ownership',
         value=(
-            'The bot manages instances, but you need a license resource first:\n'
-            '```bash\n'
-            'kubectl apply -f examples/foundry-license.yaml\n'
-            '```'
+            'Instances you create are tagged with your Discord ID. '
+            'Only you (or a cluster admin) can delete your instances.'
         ),
         inline=False
     )
     
-    embed.add_field(
-        name='🎮 Bot Commands',
-        value=(
-            '• `/vtt-create`: Create a new Foundry instance\n'
-            '• `/vtt-status`: Check status of all or a specific instance\n'
-            '• `/vtt-update`: Activate or deactivate an instance (license switch)\n'
-            '• `/vtt-delete`: Remove an instance you created'
-        ),
-        inline=False
-    )
-    
-    embed.set_footer(text='Kratix Foundry Platform • v1.0')
+    embed.set_footer(text='Powered by Kratix Foundry Platform')
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
