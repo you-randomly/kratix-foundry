@@ -8,7 +8,8 @@ A Discord bot for managing Foundry VTT instances via Kratix.
 import os
 import sys
 import time
-from typing import Optional, List, Dict, Any
+import asyncio
+from typing import Optional, List, Dict, Any, Callable, Awaitable
 
 import discord
 from discord import app_commands
@@ -582,6 +583,40 @@ def format_instance_embed(instance: Dict[str, Any], is_active_override: Optional
     return embed
 
 
+async def wait_for_resource_condition(
+    get_fn: Callable[[], Any],
+    check_fn: Callable[[Any], bool],
+    timeout_seconds: int = 120,
+    interval_seconds: int = 5,
+    on_progress: Optional[Callable[[Any], Awaitable[None]]] = None
+) -> Optional[Any]:
+    """
+    Polls a resource using get_fn and waits until check_fn returns True.
+    
+    Args:
+        get_fn: Function that returns the resource (or None)
+        check_fn: Function that takes the resource and returns True if condition reached
+        timeout_seconds: Max time to wait
+        interval_seconds: Time between polls
+        on_progress: Optional callback function triggered on each poll
+        
+    Returns:
+        The final resource state, or None if timed out.
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout_seconds:
+        resource = get_fn()
+        if resource and check_fn(resource):
+            return resource
+            
+        if on_progress:
+            await on_progress(resource)
+            
+        await asyncio.sleep(interval_seconds)
+    
+    return None
+
+
 @bot.event
 async def on_ready():
     """Called when the bot is ready."""
@@ -873,26 +908,57 @@ async def vtt_create(
     )
     
     if result['success']:
-        embed = discord.Embed(
-            title='✅ Instance Created',
-            description=result['message'],
-            color=discord.Color.green()
+        # Send initial progress message
+        provision_embed = discord.Embed(
+            title='🚀 Provisioning Instance...',
+            description=f"Instance **{name}** is being created. This usually takes 30-60 seconds.",
+            color=discord.Color.blue()
         )
-        embed.add_field(name='Name', value=name, inline=True)
-        embed.add_field(name='License', value=license_name, inline=True)
-        if foundry_version:
-            embed.add_field(name='Version', value=foundry_version, inline=True)
-        if storage_backend:
-            embed.add_field(name='Storage', value=storage_backend.value.upper(), inline=True)
-        embed.set_footer(text='The Kratix pipeline will provision the instance shortly')
+        provision_embed.add_field(name='Name', value=name, inline=True)
+        provision_embed.add_field(name='License', value=license_name, inline=True)
+        provision_embed.set_footer(text='Started polling for readiness...')
+        
+        msg = await interaction.followup.send(embed=provision_embed)
+        
+        # Define condition check
+        def check_ready(inst):
+            conditions = inst.get('status', {}).get('conditions', [])
+            # Wait for Reconciled=True
+            return any(c.get('type') == 'Reconciled' and c.get('status') == 'True' for c in conditions)
+
+        # Poll for readiness
+        final_inst = await wait_for_resource_condition(
+            get_fn=lambda: get_foundry_instance(name),
+            check_fn=check_ready,
+            timeout_seconds=180, # 3 mins for creation
+            interval_seconds=10
+        )
+        
+        if final_inst:
+            # Success! Format the final embed
+            embed = format_instance_embed(final_inst)
+            embed.title = f'✅ Instance Ready: {name}'
+            url = f"https://{name}.k8s.orb.local"
+            embed.description = f"Your new Foundry VTT instance is now live!\n🔗 [**Access Instance**]({url})"
+            await msg.edit(embed=embed)
+        else:
+            # Timeout
+            timeout_embed = discord.Embed(
+                title='⚠️ Provisioning Taking Longer Than Expected',
+                description=(
+                    f"Instance **{name}** was created but hasn't finished provisioning yet. "
+                    "It should be ready in a few minutes. Check `/vtt-status` later."
+                ),
+                color=discord.Color.orange()
+            )
+            await msg.edit(embed=timeout_embed)
     else:
         embed = discord.Embed(
             title='❌ Creation Failed',
             description=result['message'],
             color=discord.Color.red()
         )
-    
-    await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 
 @vtt_create.autocomplete('license_name')
@@ -951,14 +1017,56 @@ async def vtt_update(
         result = activate_instance(instance)
         
         if result['success']:
-            embed = discord.Embed(
-                title='✅ Instance Activated',
-                description=result['message'],
-                color=discord.Color.green()
+            license_name = result.get('license_name')
+            if not license_name:
+                await interaction.followup.send(content=f"✅ {result['message']}")
+                return
+            
+            # Send initial progress message
+            switch_embed = discord.Embed(
+                title='🔄 Switching Active Instance...',
+                description=f"Switching license **{license_name}** to **{instance}**. This usually takes 10-20 seconds.",
+                color=discord.Color.blue()
             )
-            if 'license_name' in result:
-                embed.add_field(name='License', value=result['license_name'], inline=True)
-            embed.set_footer(text='The Kratix pipeline will update routes shortly')
+            switch_embed.add_field(name='Target', value=instance, inline=True)
+            switch_embed.set_footer(text='The Kratix pipeline is reconciling routes...')
+            
+            msg = await interaction.followup.send(embed=switch_embed)
+            
+            # Define condition check: license status must show this instance as active
+            def check_active(lic):
+                return lic.get('status', {}).get('activeInstance') == instance
+
+            # Poll for the license status to update
+            final_lic = await wait_for_resource_condition(
+                get_fn=lambda: get_foundry_license(license_name),
+                check_fn=check_active,
+                timeout_seconds=60,
+                interval_seconds=5
+            )
+            
+            if final_lic:
+                # Success! Now get the actual instance to show in the embed
+                inst_data = get_foundry_instance(instance)
+                if inst_data:
+                    embed = format_instance_embed(inst_data, is_active_override=True)
+                    embed.title = f'✅ Instance Live: {instance}'
+                    url = f"https://{instance}.k8s.orb.local"
+                    embed.description = f"Switch complete! The instance is now accessible.\n🔗 [**Access Instance**]({url})"
+                    await msg.edit(embed=embed)
+                else:
+                    await msg.edit(content=f"✅ Switch complete! Instance **{instance}** is now active.")
+            else:
+                # Timeout
+                timeout_embed = discord.Embed(
+                    title='⚠️ Switch Taking Longer Than Expected',
+                    description=(
+                        f"The request to activate **{instance}** was sent, but the routing hasn't updated yet. "
+                        "It should be ready shortly. Check `/vtt-status` in a moment."
+                    ),
+                    color=discord.Color.orange()
+                )
+                await msg.edit(embed=timeout_embed)
         else:
             embed = discord.Embed(
                 title='❌ Activation Failed',
@@ -967,21 +1075,57 @@ async def vtt_update(
             )
             if 'license_name' in result:
                 embed.add_field(name='License', value=result['license_name'], inline=True)
-        
-        await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed)
     
     elif action.value == 'deactivate':
         result = deactivate_instance(instance)
         
         if result['success']:
-            embed = discord.Embed(
-                title='🟠 Instance Deactivated',
-                description=result['message'],
+            license_name = result.get('license_name')
+            if not license_name:
+                await interaction.followup.send(content=f"✅ {result['message']}")
+                return
+
+            # Send initial progress message
+            deactivate_embed = discord.Embed(
+                title='🟠 Deactivating Instance...',
+                description=f"Deactivating **{instance}** from license **{license_name}**. This usually takes 10-20 seconds.",
                 color=discord.Color.orange()
             )
-            if 'license_name' in result:
-                embed.add_field(name='License', value=result['license_name'], inline=True)
-            embed.set_footer(text='The Kratix pipeline will update routes shortly')
+            deactivate_embed.set_footer(text='The Kratix pipeline is reconciling routes...')
+            
+            msg = await interaction.followup.send(embed=deactivate_embed)
+            
+            # Define condition check: license status must NOT show this instance as active
+            def check_inactive(lic):
+                return lic.get('status', {}).get('activeInstance') != instance
+
+            # Poll for the license status to update
+            final_lic = await wait_for_resource_condition(
+                get_fn=lambda: get_foundry_license(license_name),
+                check_fn=check_inactive,
+                timeout_seconds=60,
+                interval_seconds=5
+            )
+            
+            if final_lic:
+                success_embed = discord.Embed(
+                    title='🟠 Instance Standby',
+                    description=f"Instance **{instance}** is now on standby. Users will see the status page.",
+                    color=discord.Color.orange()
+                )
+                await msg.edit(embed=success_embed)
+            else:
+                # Timeout
+                timeout_embed = discord.Embed(
+                    title='⚠️ Deactivation Taking Longer Than Expected',
+                    description=(
+                        f"The request to deactivate **{instance}** was sent, but the routing hasn't updated yet. "
+                        "Check `/vtt-status` in a moment."
+                    ),
+                    color=discord.Color.orange()
+                )
+                await msg.edit(embed=timeout_embed)
         else:
             embed = discord.Embed(
                 title='❌ Deactivation Failed',
@@ -990,8 +1134,7 @@ async def vtt_update(
             )
             if 'license_name' in result:
                 embed.add_field(name='License', value=result['license_name'], inline=True)
-        
-        await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed)
     
     else:
         embed = discord.Embed(
