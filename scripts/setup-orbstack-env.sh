@@ -106,8 +106,8 @@ log_success "Infrastructure configured"
 
 # Build pipeline images (No need to load in OrbStack, it uses Docker engine)
 log_step "Building Foundry pipeline images..."
-docker build -t kratix-foundry-instance-configure:dev "$PROJECT_ROOT/promises/foundry-instance/configure-pipeline"
-docker build -t kratix-foundry-license-configure:dev "$PROJECT_ROOT/promises/foundry-license/configure-pipeline"
+docker build -t kratix-foundry-instance-configure:dev -f "$PROJECT_ROOT/promises/foundry-instance/configure-pipeline/Dockerfile" "$PROJECT_ROOT"
+docker build -t kratix-foundry-license-configure:dev -f "$PROJECT_ROOT/promises/foundry-license/configure-pipeline/Dockerfile" "$PROJECT_ROOT"
 log_success "Images built"
 
 # Apply Foundry Promises

@@ -96,6 +96,8 @@ spec:
                           enum: [active, standby]
         served: true
         storage: true
+        subresources:
+          status: {}
   dependencies: []
   workflows:
     resource:
