@@ -55,22 +55,26 @@ apiVersion: foundry.platform/v1alpha1
 kind: FoundryInstance
 metadata:
   name: main-campaign
+  namespace: foundry-vtt
 spec:
   licenseRef:
     name: my-license
-  requestActive: true
-  subdomain: main
   foundryVersion: "13.347.0"
+  storageBackend: pvc  # or nfs
 ```
 
 ## Instance Configuration
 
 ### Activation
 
-| Field | Description |
+Instances are activated/deactivated via the parent `FoundryLicense.spec.activeInstanceName` field, not directly on the instance.
+
+### Storage Backend
+
+| Value | Description |
 |-------|-------------|
-| `requestActive` | Set to `true` to request this instance become active |
-| `switchoverMode` | How this instance can be displaced: `block`, `queue`, or `force` |
+| `nfs` | Uses shared NFS storage (default) |
+| `pvc` | Creates a dedicated PersistentVolumeClaim |
 
 ### Volume Modes
 
@@ -115,7 +119,7 @@ Each instance automatically receives a `monitor` sidecar container that polls th
 ## Directory Structure
 
 ```
-ruby-cosmos/
+kratix-foundry/
 ├── manifests/
 │   ├── kratix.yaml                  # Kratix installation
 │   └── foundry-standby-page.yaml    # Standby page deployment

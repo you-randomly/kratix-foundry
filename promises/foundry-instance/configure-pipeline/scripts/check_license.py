@@ -1,5 +1,4 @@
 import sys
-import time
 from kubernetes import client, config
 
 def check_license(pipeline, resource: dict) -> bool:
@@ -44,12 +43,12 @@ def check_license(pipeline, resource: dict) -> bool:
             print(f"This instance is NOT active")
 
         # Trigger License reconciliation to ensure routes are updated
-        # Equivalent to 'kubectl patch foundrylicense ...'
+        # Must use a LABEL (not annotation) with value "true" for Kratix to detect
         print(f"Touching license {license_name} to trigger routing update...")
         patch = {
             "metadata": {
-                "annotations": {
-                    "kratix.io/manual-reconciliation": str(int(time.time()))
+                "labels": {
+                    "kratix.io/manual-reconciliation": "true"
                 }
             }
         }

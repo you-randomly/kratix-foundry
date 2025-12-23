@@ -55,3 +55,24 @@ On first run, the bot will sync commands to your guild. Use `/vtt-help` in Disco
 - `/vtt-create`: Create a new Foundry instance resource.
 - `/vtt-update`: Activate or deactivate an instance.
 - `/vtt-delete`: Delete an instance you created.
+
+## Project Structure
+
+The bot uses a modular Cog-based architecture:
+
+```
+discord-bot/
+├── bot.py           # Entry point (~70 lines)
+├── config.py        # Configuration constants
+├── k8s_client.py    # Kubernetes operations
+├── cache.py         # TTL cache for K8s API
+├── embeds.py        # Discord embed formatting
+├── views.py         # UI components (buttons)
+├── tasks.py         # Background tasks
+└── cogs/            # Command modules
+    ├── help.py      # /vtt-help
+    ├── status.py    # /vtt-status
+    ├── create.py    # /vtt-create
+    ├── update.py    # /vtt-update
+    └── delete.py    # /vtt-delete
+```

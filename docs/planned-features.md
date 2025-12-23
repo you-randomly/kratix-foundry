@@ -59,7 +59,7 @@ status:
 
 ---
 
-## Discord Integration
+## Discord Integration (Implemented ✅)
 
 > [!TIP]
 > Located in `discord-bot/` within this monorepo, sharing `lib/foundry_lib`.
@@ -141,9 +141,9 @@ spec:
 |----------|---------|------------|
 | 🟢 High | Foundry version selection | Low |
 | 🟢 High | Volume modes (basic) | Medium |
-| 🟡 Medium | Player session monitoring | Medium |
+| ✅ Done | Player session monitoring | Medium |
 | 🟡 Medium | Status page activation button | Low |
-| 🟡 Medium | Discord bot (basic commands) | Medium |
+| ✅ Done | Discord bot (basic commands) | Medium |
 | 🔴 Low | Volume state transitions | High |
 | 🔴 Low | Discord RBAC & ownership | High |
 | 🔴 Low | License controls & inheritance | High |
@@ -162,7 +162,7 @@ The platform has been successfully migrated to the Python Kratix SDK.
 |---------|--------|----------------|
 | Volume state machine | In Progress | Ready for implementation in `lib/foundry_lib/` |
 | Foundry API calls | Complete ✅ | Powered by `requests` in `lib/foundry_lib/foundry_api.py` |
-| Discord integration | Planned | Will share the `foundry_lib` library |
+| Discord integration | Complete ✅ | Modular Cog-based bot in `discord-bot/` |
 | Unit testing | Ready | Logic is now testable via `pytest` |
 
 > [!IMPORTANT]

@@ -82,7 +82,7 @@ sequenceDiagram
 ## Technical Implementation Details
 
 ### License "Touch" Mechanism
-To ensure zero-wait routing when a new instance is created, the `FoundryInstance` pipeline performs a "touch" on its parent `FoundryLicense` using the Kubernetes Python client to update its annotations. This forces Kratix to immediately execute the License's configuration pipeline, which then detects the new instance and generates its identity route.
+To ensure zero-wait routing when a new instance is created, the `FoundryInstance` pipeline performs a "touch" on its parent `FoundryLicense` by applying the `kratix.io/manual-reconciliation: "true"` label. Kratix watches for this label and triggers the License's configuration pipeline, which then detects the new instance and generates its identity route. Kratix automatically removes this label after scheduling the reconciliation.
 
 ### Master Routing Logic
 The license pipeline use the `kubernetes` Python client to list all instances associated with the license. For each match, it generates an `HTTPRoute` manifest with a conditional `backendRef` (pointing to either the instance service or the standby page).

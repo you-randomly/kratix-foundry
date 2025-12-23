@@ -20,6 +20,8 @@ kubectl get kustomization -n flux-system
 > **Note:** `cloud-provider-kind` is required to assign external IPs to LoadBalancer services.
 > Install it from: https://github.com/kubernetes-sigs/cloud-provider-kind
 
+For detailed prerequisites and manual installation steps, see [docs/SETUP.md](docs/SETUP.md).
+
 ## Architecture
 
 ┌─────────────────────────────────────────────────────────────────────┐
