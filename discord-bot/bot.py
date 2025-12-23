@@ -604,6 +604,77 @@ async def on_ready():
 
 
 
+@bot.tree.command(name='vtt-help', description='Show setup guide and command help')
+async def vtt_help(interaction: discord.Interaction):
+    """
+    Display a comprehensive setup guide for the Kratix Foundry platform.
+    """
+    embed = discord.Embed(
+        title='🚀 Kratix Foundry Setup Guide',
+        description='Follow these steps to set up your own self-service Foundry platform.',
+        color=discord.Color.blue()
+    )
+    
+    embed.add_field(
+        name='1️⃣ Infrastructure Setup',
+        value=(
+            '• Ensure you have a Kubernetes cluster (Kind, Orbstack, etc.)\n'
+            '• Install **Gateway API** (Envoy, Istio, or similar)\n'
+            '• Install **Kratix**: `kubectl apply -f manifests/kratix.yaml`'
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name='2️⃣ Install Promises',
+        value=(
+            'Install the core platform definitions:\n'
+            '```bash\n'
+            'kubectl apply -f promises/foundry-license/promise.yaml\n'
+            'kubectl apply -f promises/foundry-instance/promise.yaml\n'
+            'kubectl apply -f manifests/foundry-standby-page.yaml\n'
+            '```'
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name='3️⃣ Configure Discord Bot',
+        value=(
+            '• Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications)\n'
+            '• Copy `.env.example` to `.env` and add your `DISCORD_BOT_TOKEN` and `DISCORD_GUILD_ID`.\n'
+            '• Set `FOUNDRY_NAMESPACE=foundry-vtt` in your `.env`.'
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name='4️⃣ Create a License',
+        value=(
+            'The bot manages instances, but you need a license resource first:\n'
+            '```bash\n'
+            'kubectl apply -f examples/foundry-license.yaml\n'
+            '```'
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name='🎮 Bot Commands',
+        value=(
+            '• `/vtt-create`: Create a new Foundry instance\n'
+            '• `/vtt-status`: Check status of all or a specific instance\n'
+            '• `/vtt-update`: Activate or deactivate an instance (license switch)\n'
+            '• `/vtt-delete`: Remove an instance you created'
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text='Kratix Foundry Platform • v1.0')
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 @bot.tree.command(name='vtt-status', description='Show Foundry instance status')
 @app_commands.describe(instance='Name of the instance to check (optional)')
 async def vtt_status(interaction: discord.Interaction, instance: Optional[str] = None):
