@@ -37,6 +37,7 @@ spec:
                         type: string
                   foundryVersion:
                     type: string
+                    pattern: ^\d+\.\d+(\.\d+)?$
                   resources:
                     type: object
                     properties:
@@ -96,6 +97,19 @@ spec:
                 image: kratix-foundry-instance-configure:dev
                 imagePullPolicy: Never
                 command: ["python3", "/app/scripts/main.py"]
+                env:
+                  - name: NFS_SERVER_HOST
+                    valueFrom:
+                      configMapKeyRef:
+                        name: foundry-nfs-config
+                        key: nfs-server-host
+                        optional: true
+                  - name: NFS_BASE_PATH
+                    valueFrom:
+                      configMapKeyRef:
+                        name: foundry-nfs-config
+                        key: nfs-base-path
+                        optional: true
                 volumeMounts:
                   - name: credentials
                     mountPath: /etc/foundry/credentials

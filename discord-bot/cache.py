@@ -5,7 +5,7 @@ TTL cache implementation for reducing Kubernetes API server load.
 import time
 from typing import Any, Dict, Optional
 
-from config import CACHE_TTL_SECONDS, CRD_CACHE_TTL_SECONDS
+from config import CACHE_TTL_SECONDS, CRD_CACHE_TTL_SECONDS, LICENSE_CACHE_TTL
 
 
 class TTLCache:
@@ -47,5 +47,5 @@ class TTLCache:
 # Global cache instances
 instances_cache = TTLCache()
 licenses_cache = TTLCache()
-licenses_list_cache = TTLCache()
+licenses_list_cache = TTLCache(default_ttl=LICENSE_CACHE_TTL)
 crd_schema_cache = TTLCache(default_ttl=CRD_CACHE_TTL_SECONDS)

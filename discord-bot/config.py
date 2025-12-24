@@ -27,3 +27,5 @@ ANNOTATION_CREATED_BY_NAME = 'foundry.platform/created-by-name'
 # Cache settings
 CACHE_TTL_SECONDS = 5  # How long to cache autocomplete results
 CRD_CACHE_TTL_SECONDS = 300  # 5 minutes for CRD schema cache
+VERSION_CACHE_TTL = 3600  # 1 hour for Foundry version cache
+LICENSE_CACHE_TTL = 300  # 5 minutes for License cache

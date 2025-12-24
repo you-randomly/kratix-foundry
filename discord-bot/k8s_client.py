@@ -116,7 +116,7 @@ def get_foundry_licenses(namespace: str = None, use_cache: bool = True) -> List[
     
     Args:
         namespace: Namespace to search in (None for cluster-wide)
-        use_cache: If True, use cached results for autocomplete (5 second TTL)
+        use_cache: If True, use cached results for autocomplete (5 minute TTL)
     """
     if not k8s_api:
         print('get_foundry_licenses: k8s_api not initialized')

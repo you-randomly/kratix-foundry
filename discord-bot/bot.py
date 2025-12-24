@@ -15,6 +15,7 @@ from config import DISCORD_TOKEN, GUILD_ID
 from cogs import COGS
 import k8s_client as k8s
 from tasks import cleanup_expired_deletions
+from utils import versions
 
 
 # Set up intents (only default - no privileged intents needed for slash commands)
@@ -55,6 +56,10 @@ async def on_ready():
     if not cleanup_expired_deletions.is_running():
         cleanup_expired_deletions.start()
         print('Started cleanup_expired_deletions background task')
+
+    # Pre-warm caches
+    bot.loop.create_task(versions.refresh_cache())
+    bot.loop.run_in_executor(None, k8s.get_foundry_licenses)
 
 
 def main():

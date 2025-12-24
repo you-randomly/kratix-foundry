@@ -11,6 +11,7 @@ from discord.ext import commands
 from embeds import format_instance_embed
 from tasks import wait_for_resource_condition
 import k8s_client as k8s
+from utils.versions import get_foundry_versions
 
 
 class CreateCog(commands.Cog):
@@ -44,6 +45,43 @@ class CreateCog(commands.Cog):
     ):
         """Create a new FoundryInstance resource."""
         await interaction.response.defer(thinking=True)
+        
+        # Get valid versions
+        valid_versions, stable_version = await get_foundry_versions()
+        
+        # Default to stable version if not provided
+        if not foundry_version:
+            if stable_version:
+                foundry_version = stable_version
+            else:
+                # Fallback if fetching failed
+                foundry_version = "12.331" 
+        
+        # Validate version
+        if valid_versions and foundry_version not in valid_versions:
+            # Check if it's at least a valid format (numeric) as a fallback
+            import re
+            if not re.match(r'^\d+(\.\d+)+$', foundry_version):
+                embed = discord.Embed(
+                    title='❌ Invalid Version',
+                    description=f'Version **{foundry_version}** is not valid. Please select a version from the list.',
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            # Warn but allow if it looks like a version (could be a new one not yet in cache)
+            # optimally we might want to strict block, but user plan said "strict checking against the list is safer"
+            # However, if cache is stale, strict blocking is dangerous.
+            # Let's verify strict check per plan decision, but re-fetch if not found?
+            # For now, strict check as per plan:
+            embed = discord.Embed(
+                title='❌ Invalid Version',
+                description=f'Version **{foundry_version}** is not in the supported list.\nSupported versions: {", ".join(valid_versions[:5])}...',
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return
         
         if not k8s.is_connected():
             embed = discord.Embed(
@@ -130,6 +168,32 @@ class CreateCog(commands.Cog):
             )
             await interaction.followup.send(embed=embed)
     
+    @vtt_create.autocomplete('foundry_version')
+    async def version_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> List[app_commands.Choice[str]]:
+        """Autocomplete callback for foundry versions."""
+        try:
+            versions, stable = await get_foundry_versions()
+            if not versions:
+                return []
+            
+            choices = []
+            for ver in versions:
+                # Filter by current input
+                if current.lower() in ver.lower():
+                    name = ver
+                    if ver == stable:
+                        name = f"{ver} (Stable)"
+                    choices.append(app_commands.Choice(name=name, value=ver))
+            
+            return choices[:25]
+        except Exception as e:
+            print(f'Version autocomplete error: {e}')
+            return []
+
     @vtt_create.autocomplete('license_name')
     async def license_autocomplete(
         self,
