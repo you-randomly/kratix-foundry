@@ -21,6 +21,8 @@ The following components must be installed in your Kubernetes cluster:
 | [external-dns](https://github.com/kubernetes-sigs/external-dns) | Automatic DNS from DNSEndpoint resources |
 | NFS Server | Shared storage backend (if using `storageBackend: nfs`) |
 
+> **Note:** For local development (OrbStack/Kind), use `storageBackend: pvc` as these environments typically lack NFS kernel modules required for `storageBackend: nfs`.
+
 ## Quick Start (OrbStack)
 
 For local development with OrbStack's built-in Kubernetes:

@@ -3,12 +3,22 @@ def setup_nfs_volume(pipeline, resource: dict) -> dict:
     Creates or references NFS volumes for instance data.
     Ported from setup-nfs-volume.sh
     """
+    import os
+    
     instance_name = resource["metadata"]["name"]
     spec = resource.get("spec", {})
     
-    # NFS server configuration
-    nfs_server = "192.168.200.184"
-    nfs_base = "/volume1/foundry"
+    storage_backend = spec.get("storageBackend", "nfs")
+    
+    # NFS server configuration - must be set via environment variable
+    nfs_server = os.environ.get("NFS_SERVER_HOST")
+    if storage_backend == "nfs" and not nfs_server:
+        raise ValueError(
+            "NFS storage backend selected but NFS_SERVER_HOST environment variable is not set. "
+            "Either set NFS_SERVER_HOST to your NFS server address, or use storageBackend: pvc"
+        )
+    
+    nfs_base = os.environ.get("NFS_BASE_PATH", "/exports")
     
     # Determine data volume path
     data_path = spec.get("nfsBasePath")
@@ -23,9 +33,7 @@ def setup_nfs_volume(pipeline, resource: dict) -> dict:
     print(f"  Data: {data_path}")
     print(f"  Plugins: {plugin_path}")
     print(f"  Worlds: {world_path}")
-    
-    storage_backend = spec.get("storageBackend", "nfs")
-    
+
     volume_info = {
         "nfsServer": nfs_server,
         "dataPath": data_path,

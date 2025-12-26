@@ -95,6 +95,9 @@ log_step "Creating foundry-vtt namespace..."
 kubectl create namespace foundry-vtt --dry-run=client -o yaml | kubectl apply -f -
 log_success "foundry-vtt namespace ready"
 
+# Note: NFS storage backend requires NFS kernel support (not always available in dev clusters)
+# For dev, use storageBackend: pvc in your FoundryInstance resources
+
 # Create default GatewayClass and Gateway
 log_step "Creating default Gateway..."
 # Create self-signed cert for Gateway (required for OrbStack HTTPS proxying)
