@@ -1,0 +1,33 @@
+# ArgoCD Application for Kratix
+#
+# Installs Kratix from the official Syntasso repository.
+# Uses the single-cluster distribution.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kratix
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/syntasso/kratix
+    targetRevision: main
+    path: distribution/single-cluster
+    
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kratix-platform-system
+    
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

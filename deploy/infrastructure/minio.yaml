@@ -1,0 +1,96 @@
+# MinIO Object Storage for Kratix StateStore
+#
+# Provides S3-compatible storage for Kratix pipeline outputs.
+# In production, consider using a managed object storage service (S3, GCS, etc.)
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-creds
+  namespace: kratix-platform-system
+type: Opaque
+stringData:
+  accessKeyID: minioadmin
+  secretAccessKey: minioadmin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: kratix-platform-system
+spec:
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: quay.io/minio/minio:RELEASE.2025-02-18T16-25-55Z
+        args: ["server", "/data", "--console-address", ":9090"]
+        env:
+        - name: MINIO_ROOT_USER
+          valueFrom:
+            secretKeyRef:
+              name: minio-creds
+              key: accessKeyID
+        - name: MINIO_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: minio-creds
+              key: secretAccessKey
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9090
+          name: console
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}  # For production, use a PVC or managed storage
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: kratix-platform-system
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 9000
+      name: api
+    - port: 9090
+      targetPort: 9090
+      name: console
+  selector:
+    app: minio
+---
+# Job to create the kratix bucket on startup
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-kratix-bucket
+  namespace: kratix-platform-system
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      containers:
+      - name: create-bucket
+        image: minio/mc:RELEASE.2024-03-03T00-13-08Z
+        command: ["/bin/sh", "-c"]
+        args: ["until mc alias set local http://minio:80 minioadmin minioadmin; do sleep 2; done; mc mb --ignore-existing local/kratix"]
+      restartPolicy: OnFailure

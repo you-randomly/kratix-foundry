@@ -1,0 +1,32 @@
+# ArgoCD Application for FluxCD
+#
+# FluxCD is used to sync Kratix pipeline outputs to the cluster.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: fluxcd
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  
+  source:
+    repoURL: https://github.com/fluxcd/flux2
+    targetRevision: main
+    path: manifests/install
+    
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: flux-system
+    
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

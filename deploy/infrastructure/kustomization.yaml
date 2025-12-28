@@ -1,0 +1,11 @@
+# Infrastructure Kustomization for Production
+#
+# Contains all infrastructure components needed for Kratix to work.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - minio.yaml
+  - state-store.yaml
+  - flux-bucket.yaml

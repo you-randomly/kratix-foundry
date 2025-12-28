@@ -1,0 +1,29 @@
+# Kratix BucketStateStore and Destination
+#
+# Configures where Kratix writes pipeline outputs.
+
+apiVersion: platform.kratix.io/v1alpha1
+kind: BucketStateStore
+metadata:
+  name: default
+spec:
+  bucketName: kratix
+  endpoint: minio.kratix-platform-system.svc.cluster.local
+  insecure: true
+  secretRef:
+    name: minio-creds
+    namespace: kratix-platform-system
+  authMethod: accessKey
+---
+# Production Destination - matches destinationSelectors in Promises
+apiVersion: platform.kratix.io/v1alpha1
+kind: Destination
+metadata:
+  name: worker-cluster
+  labels:
+    environment: production  # Matches promise destinationSelectors
+spec:
+  stateStoreRef:
+    kind: BucketStateStore
+    name: default
+  path: worker-cluster

@@ -1,0 +1,40 @@
+# FluxCD Bucket Source for Kratix
+#
+# FluxCD watches the MinIO bucket and applies workloads to the cluster.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: flux-system
+type: Opaque
+stringData:
+  accesskey: minioadmin
+  secretkey: minioadmin
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: Bucket
+metadata:
+  name: kratix-bucket
+  namespace: flux-system
+spec:
+  interval: 10s
+  provider: generic
+  bucketName: kratix
+  endpoint: minio.kratix-platform-system.svc.cluster.local:80
+  insecure: true
+  secretRef:
+    name: minio-credentials
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kratix-worker-cluster
+  namespace: flux-system
+spec:
+  interval: 5s
+  prune: true
+  sourceRef:
+    kind: Bucket
+    name: kratix-bucket
+  path: ./worker-cluster

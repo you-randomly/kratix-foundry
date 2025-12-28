@@ -1,17 +1,15 @@
-# ArgoCD Application for Kratix Foundry Promises
+# ArgoCD Application for Kratix Infrastructure
 #
-# Deploys the Kratix Promises (FoundryInstance and FoundryLicense) and
-# the standby page infrastructure from the kratix-foundry repository.
-#
-# Add this file to your argo-cd repository: github.com/you-randomly/argo-cd
+# Deploys MinIO StateStore and FluxCD Bucket configuration.
+# Must be synced AFTER Kratix and FluxCD are running.
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: kratix-foundry-promises
+  name: kratix-infrastructure
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/sync-wave: "-1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -20,11 +18,10 @@ spec:
   source:
     repoURL: https://github.com/you-randomly/kratix-foundry.git
     targetRevision: main
-    path: deploy/production
+    path: deploy/infrastructure
     
   destination:
     server: https://kubernetes.default.svc
-    # Promises are cluster-scoped, namespace here is just for kustomization context
     namespace: kratix-platform-system
     
   syncPolicy:
