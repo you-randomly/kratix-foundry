@@ -63,7 +63,7 @@ class StatusCog(commands.Cog):
                 )
                 await interaction.followup.send(embed=embed)
         else:
-            # List all instances
+            # List all instances - show summary view
             instances = k8s.get_foundry_instances()
             
             if not instances:
@@ -89,21 +89,46 @@ class StatusCog(commands.Cog):
                         )
                         license_active_map[license_name] = active_name
             
-            # Send all instance embeds
-            embeds = []
+            # Build summary table
+            summary_lines = []
             for inst in instances:
-                license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
                 inst_name = inst['metadata']['name']
+                spec = inst.get('spec', {})
+                status = inst.get('status', {})
+                license_name = spec.get('licenseRef', {}).get('name')
                 is_active = license_active_map.get(license_name) == inst_name
-                embeds.append(format_instance_embed(inst, is_active_override=is_active))
-            
-            # Discord allows max 10 embeds per message
-            for i in range(0, len(embeds), 10):
-                batch = embeds[i:i+10]
-                if i == 0:
-                    await interaction.followup.send(embeds=batch)
+                
+                # Status emoji
+                status_emoji = '🟢' if is_active else '🟠'
+                
+                # Player count
+                players = status.get('connectedPlayers', 0)
+                if players < 0:
+                    player_text = '❓'
                 else:
-                    await interaction.followup.send(embeds=batch)
+                    player_text = f'{players}👥'
+                
+                # World
+                world_name = status.get('activeWorld')
+                if world_name and world_name is not True:
+                    world_text = f'🌍 {world_name}'
+                else:
+                    world_text = '⚫ -'
+                
+                # Version
+                version = spec.get('foundryVersion', '-')
+                
+                summary_lines.append(
+                    f"{status_emoji} **{inst_name}** • {player_text} • {world_text} • v{version}"
+                )
+            
+            embed = discord.Embed(
+                title=f'🎲 Foundry Instances ({len(instances)})',
+                description='\n'.join(summary_lines),
+                color=discord.Color.blue()
+            )
+            embed.set_footer(text='Use /vtt-status <instance> for details • Powered by Kratix Foundry')
+            await interaction.followup.send(embed=embed)
     
     @vtt_status.autocomplete('instance')
     async def instance_autocomplete(

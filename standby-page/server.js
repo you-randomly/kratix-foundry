@@ -129,13 +129,37 @@ async function findLicenseForInstance(instanceName, credentials) {
         return { error: 'License not found', scheduledDeleteAt };
     }
 
+    const activeInstanceName = license.spec?.activeInstanceName || null;
+
+    // Fetch the active instance's stats directly for real-time player counts
+    let activeInstanceStats = null;
+    if (activeInstanceName) {
+        try {
+            const activeInstance = await k8sRequest(
+                `/apis/foundry.platform/v1alpha1/namespaces/${targetNs}/foundryinstances/${activeInstanceName}`,
+                credentials
+            );
+            if (activeInstance && activeInstance.status) {
+                activeInstanceStats = {
+                    connectedPlayers: activeInstance.status.connectedPlayers ?? null,
+                    worldActive: activeInstance.status.worldActive ?? null,
+                    activeWorld: activeInstance.status.activeWorld || null,
+                    checkedAt: activeInstance.status.lastSidecarUpdate || null
+                };
+            }
+        } catch (err) {
+            console.log(`Failed to fetch active instance ${activeInstanceName}: ${err.message}`);
+        }
+    }
+
     return {
         instanceName: instanceName,
         licenseName: licenseName,
-        activeInstance: license.spec?.activeInstanceName || null,
-        connectedPlayers: license.status?.activeInstanceStats?.connectedPlayers ?? null,
-        worldActive: license.status?.activeInstanceStats?.worldActive ?? null,
-        checkedAt: license.status?.activeInstanceStats?.checkedAt || null,
+        activeInstance: activeInstanceName,
+        connectedPlayers: activeInstanceStats?.connectedPlayers ?? null,
+        worldActive: activeInstanceStats?.worldActive ?? null,
+        activeWorld: activeInstanceStats?.activeWorld || null,
+        checkedAt: activeInstanceStats?.checkedAt || null,
         scheduledDeleteAt: scheduledDeleteAt || null
     };
 }

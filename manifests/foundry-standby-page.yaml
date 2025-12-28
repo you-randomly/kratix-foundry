@@ -24,7 +24,7 @@ spec:
       serviceAccountName: foundry-controller
       containers:
       - name: standby-page
-        image: ghcr.io/you-randomly/foundry-platform/standby-page:dev
+        image: kratix-foundry-standby-page:dev
         imagePullPolicy: Never
         ports:
         - containerPort: 8080
