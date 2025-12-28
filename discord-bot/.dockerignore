@@ -1,0 +1,18 @@
+# Ignore local development files
+.env
+.env.example
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.git/
+.gitignore
+.vscode/
+*.md
