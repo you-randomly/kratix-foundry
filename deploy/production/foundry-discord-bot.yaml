@@ -1,0 +1,125 @@
+# Discord Bot Deployment
+#
+# Deploys the Kratix Foundry Discord bot for managing Foundry VTT instances.
+# Requires ExternalSecret to populate discord-bot-secrets with DISCORD_BOT_TOKEN.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: foundry-bot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: foundry-discord-bot
+  namespace: foundry-bot
+---
+# ClusterRole for managing Foundry resources across namespaces
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: foundry-discord-bot
+rules:
+  # Read/write FoundryInstances and FoundryLicenses
+  - apiGroups: ["foundry.platform"]
+    resources: ["foundryinstances", "foundrylicenses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["foundry.platform"]
+    resources: ["foundryinstances/status", "foundrylicenses/status"]
+    verbs: ["get", "update", "patch"]
+  # Read secrets for license refs
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]
+  # Read namespaces for context
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: foundry-discord-bot
+subjects:
+  - kind: ServiceAccount
+    name: foundry-discord-bot
+    namespace: foundry-bot
+roleRef:
+  kind: ClusterRole
+  name: foundry-discord-bot
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: foundry-discord-bot
+  namespace: foundry-bot
+  labels:
+    app: foundry-discord-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: foundry-discord-bot
+  template:
+    metadata:
+      labels:
+        app: foundry-discord-bot
+    spec:
+      serviceAccountName: foundry-discord-bot
+      containers:
+        - name: bot
+          image: ghcr.io/you-randomly/kratix-foundry/discord-bot:latest
+          imagePullPolicy: Always
+          env:
+            - name: DISCORD_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot-secrets
+                  key: DISCORD_BOT_TOKEN
+            - name: DISCORD_GUILD_ID
+              valueFrom:
+                secretKeyRef:
+                  name: discord-bot-secrets
+                  key: DISCORD_GUILD_ID
+                  optional: true
+            - name: FOUNDRY_NAMESPACE
+              value: foundry-vtt
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          # Health check - bot stays running
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os; exit(0)"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+      restartPolicy: Always
+---
+# Example ExternalSecret - customize for your Bitwarden setup
+# apiVersion: external-secrets.io/v1beta1
+# kind: ExternalSecret
+# metadata:
+#   name: discord-bot-secrets
+#   namespace: foundry-bot
+# spec:
+#   refreshInterval: 1h
+#   secretStoreRef:
+#     name: bitwarden-secrets
+#     kind: ClusterSecretStore
+#   target:
+#     name: discord-bot-secrets
+#   data:
+#     - secretKey: DISCORD_BOT_TOKEN
+#       remoteRef:
+#         key: discord-bot-token
+#     - secretKey: DISCORD_GUILD_ID
+#       remoteRef:
+#         key: discord-guild-id

@@ -1,0 +1,127 @@
+apiVersion: platform.kratix.io/v1alpha1
+kind: Promise
+metadata:
+  name: foundry-license
+spec:
+  destinationSelectors:
+  - matchLabels:
+      environment: production
+  api:
+    apiVersion: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    metadata:
+      name: foundrylicenses.foundry.platform
+    spec:
+      group: foundry.platform
+      names:
+        kind: FoundryLicense
+        plural: foundrylicenses
+        singular: foundrylicense
+      scope: Namespaced
+      versions:
+      - name: v1alpha1
+        schema:
+          openAPIV3Schema:
+            type: object
+            x-kubernetes-validations:
+              - rule: "!has(self.spec.activeInstanceName) || self.spec.activeInstanceName.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')"
+                message: "activeInstanceName must be a valid Kubernetes name"
+            properties:
+              spec:
+                type: object
+                required:
+                - licenseSecretRef
+                properties:
+                  licenseSecretRef:
+                    type: object
+                    description: Reference to Secret containing the Foundry VTT license key
+                    required:
+                    - name
+                    - key
+                    properties:
+                      name:
+                        type: string
+                        description: Name of the Secret
+                      key:
+                        type: string
+                        description: Key within the Secret containing the license
+                  activeInstanceName:
+                    type: string
+                    description: Name of the FoundryInstance that should be active
+                  switchMode:
+                    type: string
+                    description: Mode for switching active instance (block or force)
+                    enum: [block, force]
+                    default: block
+                  gateway:
+                    type: object
+                    description: Gateway configuration for routing
+                    properties:
+                      parentRef:
+                        type: object
+                        required: [name, namespace]
+                        properties:
+                          name: {type: string}
+                          namespace: {type: string}
+                      dnsTarget: {type: string}
+                  owner:
+                    type: string
+                    description: Email or identifier of the license owner
+
+              status:
+                type: object
+                properties:
+                  activeInstance:
+                    type: string
+                    description: Name of the currently active FoundryInstance
+                  activeInstanceStats:
+                    type: object
+                    properties:
+                      connectedPlayers: {type: integer}
+                      worldActive: {type: boolean}
+                      worldName: {type: string}
+                      checkedAt: {type: string}
+                      error: {type: string}
+                  registeredInstances:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        state:
+                          type: string
+                          enum: [active, standby]
+        served: true
+        storage: true
+        subresources:
+          status: {}
+  dependencies: []
+  workflows:
+    resource:
+      configure:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: validate-license
+          spec:
+            rbac:
+              permissions:
+                - apiGroups: ["foundry.platform"]
+                  resources: ["foundrylicenses", "foundrylicenses/status", "foundryinstances"]
+                  verbs: ["get", "list", "patch", "update"]
+
+            containers:
+              - name: validate-and-route
+
+                image: ghcr.io/you-randomly/kratix-foundry/license-pipeline:latest
+                imagePullPolicy: Always
+                command: ["python3", "/app/scripts/main.py"]
+                volumeMounts:
+                  - name: credentials
+                    mountPath: /etc/foundry/credentials
+                    readOnly: true
+            volumes:
+              - name: credentials
+                secret:
+                  secretName: foundry-credentials

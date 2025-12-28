@@ -1,0 +1,26 @@
+# Example FoundryLicense for Production
+#
+# This is an example - you will need to:
+# 1. Create an ExternalSecret that populates the 'foundry-license' secret
+# 2. Update the licenseSecretRef to match your secret name
+# 3. Configure gateway settings for your production setup
+
+apiVersion: foundry.platform/v1alpha1
+kind: FoundryLicense
+metadata:
+  name: shared-license
+  namespace: default
+spec:
+  licenseSecretRef:
+    name: foundry-license  # Populated by ExternalSecret from Bitwarden
+    key: license-key
+  
+  # Uncomment and configure for your production gateway
+  # gateway:
+  #   parentRef:
+  #     name: your-gateway-name
+  #     namespace: your-gateway-namespace
+  #   dnsTarget: foundry.yourdomain.com
+  
+  owner: owner@example.com
+  switchMode: block  # 'block' prevents switching if players connected

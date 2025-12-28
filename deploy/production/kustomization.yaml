@@ -1,0 +1,16 @@
+# Production Deployment Kustomization
+#
+# This kustomization contains production-ready manifests with GHCR image references.
+# ArgoCD should point to this directory.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Infrastructure components
+  - foundry-standby-page.yaml
+  - foundry-discord-bot.yaml
+  
+  # Kratix Promises
+  - promise-foundry-instance.yaml
+  - promise-foundry-license.yaml
