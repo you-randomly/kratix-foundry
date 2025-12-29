@@ -10,7 +10,7 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict):
     spec = resource.get("spec", {})
     
     # We'll use the pipeline image itself for the monitor as it has all dependencies
-    monitor_image = "kratix-foundry-instance-configure:dev"
+    monitor_image = "ghcr.io/you-randomly/kratix-foundry/instance-pipeline:latest"
     
     version = spec.get("foundryVersion", "13.347.0")
     resources = spec.get("resources", {})
