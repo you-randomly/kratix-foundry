@@ -144,9 +144,11 @@ class CreateCog(commands.Cog):
             if final_inst:
                 embed = format_instance_embed(final_inst, is_active_override=False)
                 embed.title = f'✅ Instance Created: {name}'
+                # Get baseDomain from license
+                base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', 'k8s.orb.local')
                 embed.description = (
                     'Your instance is ready! Use `/vtt-update` with `activate` to make it live.\n'
-                    f'🔗 Once active, access at: https://{name}.k8s.orb.local'
+                    f'🔗 Once active, access at: https://{name}.{base_domain}'
                 )
                 await msg.edit(embed=embed)
             else:

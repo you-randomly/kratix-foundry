@@ -18,13 +18,14 @@ def main():
         resource = pipeline.resource()
         
         # Step 1: Check License
-        is_active = check_license(pipeline, resource)
+        is_active, license_data = check_license(pipeline, resource)
+        base_domain = license_data.get("baseDomain", "k8s.orb.local")
         
         # Step 2: Setup Volume
         volume_info = setup_nfs_volume(pipeline, resource)
         
         # Step 3: Generate Manifests
-        generate_manifests(pipeline, resource, volume_info)
+        generate_manifests(pipeline, resource, volume_info, base_domain)
         
         # Step 4: Add Player Status (if active)
         if is_active:
@@ -35,7 +36,7 @@ def main():
                 with open(admin_key_path, 'r') as f:
                     admin_key = f.read().strip()
                 
-                hostname = f"{resource['metadata']['name']}.k8s.orb.local"
+                hostname = f"{resource['metadata']['name']}.{base_domain}"
                 stats = check_players(hostname, admin_key)
                 
                 # Merge stats into status

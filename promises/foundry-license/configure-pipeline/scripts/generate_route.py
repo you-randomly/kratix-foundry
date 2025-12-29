@@ -34,6 +34,7 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
     gateway_name = parent_ref.get("name", "default-gateway")
     gateway_ns = parent_ref.get("namespace", license_ns) # Default to license namespace
     dns_target = spec_gw.get("dnsTarget", "192.168.139.2")
+    base_domain = spec_gw.get("baseDomain", "k8s.orb.local")  # Default for dev
 
     warning = None
     active_instance_name = desired_active_name
@@ -102,7 +103,7 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
             # Proceed to generate route (as standby)
             
         found_any = True
-        hostname = f"{name}.k8s.orb.local"
+        hostname = f"{name}.{base_domain}"
         
         state = "standby"
         backend_service = "foundry-standby-page"

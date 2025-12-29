@@ -64,6 +64,9 @@ spec:
                           name: {type: string}
                           namespace: {type: string}
                       dnsTarget: {type: string}
+                      baseDomain:
+                        type: string
+                        description: Base domain for instance hostnames (e.g., lab.jake-watson.co.uk)
                   owner:
                     type: string
                     description: Email or identifier of the license owner

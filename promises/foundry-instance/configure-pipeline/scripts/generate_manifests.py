@@ -1,6 +1,6 @@
 from foundry_lib.manifest_templates import deployment_template, service_template, pvc_template, rbac_templates
 
-def generate_manifests(pipeline, resource: dict, volume_info: dict):
+def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain: str = "k8s.orb.local"):
     """
     Generates Kubernetes manifests for FoundryInstance (Deployment, Service, PVC, RBAC, etc.)
     Ported from generate-manifests.sh
@@ -19,7 +19,7 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict):
     proxy_ssl = spec.get("proxySSL", True)
     proxy_port = spec.get("proxyPort", 443)
     
-    hostname = f"{instance_name}.k8s.orb.local"
+    hostname = f"{instance_name}.{base_domain}"
     
     storage_backend = volume_info.get("storageBackend", "nfs")
     

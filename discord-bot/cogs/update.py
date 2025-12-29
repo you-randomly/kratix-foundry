@@ -112,7 +112,9 @@ class UpdateCog(commands.Cog):
                 if inst_data:
                     embed = format_instance_embed(inst_data, is_active_override=True)
                     embed.title = f'✅ Instance Live: {instance}'
-                    url = f"https://{instance}.k8s.orb.local"
+                    # Get baseDomain from license
+                    base_domain = final_lic.get('spec', {}).get('gateway', {}).get('baseDomain', 'k8s.orb.local')
+                    url = f"https://{instance}.{base_domain}"
                     embed.description = f"Switch complete! The instance is now accessible.\n🔗 [**Access Instance**]({url})"
                     await msg.edit(embed=embed)
                 else:

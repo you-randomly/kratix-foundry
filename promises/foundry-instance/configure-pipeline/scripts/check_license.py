@@ -25,6 +25,7 @@ def check_license(pipeline, resource: dict) -> bool:
     print(f"Checking license reference '{license_name}'...")
 
     is_active = False
+    license_data = {"baseDomain": "k8s.orb.local"}  # Default for dev
     try:
         # Fetch the FoundryLicense
         license_obj = custom_api.get_namespaced_custom_object(
@@ -34,6 +35,10 @@ def check_license(pipeline, resource: dict) -> bool:
             plural="foundrylicenses",
             name=license_name
         )
+        
+        # Extract gateway config including baseDomain
+        gateway = license_obj.get("spec", {}).get("gateway", {})
+        license_data["baseDomain"] = gateway.get("baseDomain", "k8s.orb.local")
         
         active_instance = license_obj.get("spec", {}).get("activeInstanceName", "")
         if active_instance == instance_name:
@@ -71,4 +76,4 @@ def check_license(pipeline, resource: dict) -> bool:
     # Surface status back to Kratix
     pipeline.write_status({"isActive": is_active})
     
-    return is_active
+    return is_active, license_data
