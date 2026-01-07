@@ -80,7 +80,6 @@ async def wait_for_resource_condition(
         await asyncio.sleep(interval_seconds)
     
     return None
-    return None
 
 
 @tasks.loop(seconds=15)
@@ -220,3 +219,5 @@ async def check_password_notifications(bot):
                         print(f"Failed to notify user or update status for {name}: {e}")
                 else:
                      print(f"Password not found for {name} despite pending flag")
+    except Exception as e:
+        print(f"Error in check_password_notifications: {e}")
