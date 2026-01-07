@@ -1,5 +1,5 @@
 from kubernetes import client, config
-from foundry_lib.manifest_templates import httproute_template, dnsendpoint_template
+from foundry_lib.manifest_templates import httproute_template
 from foundry_lib.foundry_api import check_players
 
 from typing import Optional
@@ -133,14 +133,6 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
         route["metadata"].setdefault("labels", {})["license"] = license_name
         pipeline.write_output(f"route-{name}.yaml", route)
 
-        # Generate DNSEndpoint
-        dns = dnsendpoint_template(
-            name=name,
-            namespace=target_ns,
-            hostname=hostname,
-            dns_target=dns_target
-        )
-        pipeline.write_output(f"dns-{name}.yaml", dns)
 
         print(f"    Generated identity route for: {name} -> {backend_service}")
 
