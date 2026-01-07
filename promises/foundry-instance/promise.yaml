@@ -71,7 +71,6 @@ spec:
                   activeWorld: {type: string}
                   worldActive: {type: boolean}
                   lastSidecarUpdate: {type: string}
-                  lastSidecarUpdate: {type: string}
                   passwordPendingNotification: {type: boolean}
                   error: {type: string}
                   conditions:
