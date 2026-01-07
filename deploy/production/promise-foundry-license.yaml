@@ -64,6 +64,9 @@ spec:
                           name: {type: string}
                           namespace: {type: string}
                       dnsTarget: {type: string}
+                      publicIP:
+                        type: string
+                        description: Public IP address for Cloudflare DNS entries (port 443 forwarded via router)
                       baseDomain:
                         type: string
                         description: Base domain for instance hostnames (e.g., lab.jake-watson.co.uk)

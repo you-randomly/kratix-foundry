@@ -1,5 +1,5 @@
 from kubernetes import client, config
-from foundry_lib.manifest_templates import httproute_template
+from foundry_lib.manifest_templates import httproute_template, dnsendpoint_template
 from foundry_lib.foundry_api import check_players
 
 from typing import Optional
@@ -35,6 +35,7 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
     gateway_ns = parent_ref.get("namespace", license_ns) # Default to license namespace
     dns_target = spec_gw.get("dnsTarget", "192.168.139.2")
     base_domain = spec_gw.get("baseDomain", "k8s.orb.local")  # Default for dev
+    public_ip = spec_gw.get("publicIP")
 
     warning = None
     active_instance_name = desired_active_name
@@ -135,6 +136,18 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
 
 
         print(f"    Generated identity route for: {name} -> {backend_service}")
+
+        if public_ip:
+            dns_endpoint = dnsendpoint_template(
+                name=name,
+                namespace=target_ns,
+                hostname=hostname,
+                dns_target=public_ip
+            )
+            # Add license label
+            dns_endpoint["metadata"].setdefault("labels", {})["license"] = license_name
+            pipeline.write_output(f"dns-{name}.yaml", dns_endpoint)
+            print(f"    Generated DNSEndpoint for: {hostname} -> {public_ip}")
 
     if not found_any:
         print(f"No instances found referencing license {license_name}. No routes generated.")
