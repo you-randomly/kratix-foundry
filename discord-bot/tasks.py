@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
 from discord.ext import tasks
+import discord
 
 from config import ANNOTATION_SCHEDULED_DELETE
 import k8s_client as k8s

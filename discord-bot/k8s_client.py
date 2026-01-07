@@ -241,7 +241,13 @@ def get_foundry_instance(name: str, namespace: str = None) -> Optional[Dict[str,
     try:
         if k8s_api is None:
              return None
-        return k8s.core_v1.read_namespaced_secret(name, ns)
+        return k8s_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_INSTANCE_PLURAL,
+            name=name
+        )
     except ApiException as e:
         if e.status == 404:
             return None
@@ -257,8 +263,7 @@ def get_secret(name: str, namespace: str = None) -> Optional[client.V1Secret]:
         
     ns = namespace or FOUNDRY_NAMESPACE
     try:
-        # We need a CoreV1Api instance. We can create one on the fly or reuse if we stored it.
-        # k8s_api is CustomObjectsApi. Let's create CoreV1Api if needed.
+        # We need a CoreV1Api instance. We can create one on the fly.
         core_api = client.CoreV1Api()
         return core_api.read_namespaced_secret(name, ns)
     except ApiException as e:
