@@ -25,26 +25,33 @@ def main():
         volume_info = setup_nfs_volume(pipeline, resource)
         
         # Step 3: Generate Manifests
-        generate_manifests(pipeline, resource, volume_info, base_domain)
+        status_updates = generate_manifests(pipeline, resource, volume_info, base_domain)
         
         # Step 4: Add Player Status (if active)
         if is_active:
             print("Checking player status for active instance...")
-            # Read admin key from mount
-            admin_key_path = "/etc/foundry/credentials/adminPassword"
-            if os.path.exists(admin_key_path):
-                with open(admin_key_path, 'r') as f:
-                    admin_key = f.read().strip()
+            # Read admin key from Secret using the helper in generate_manifests
+            # (Imports are available since we imported generate_manifests)
+            from generate_manifests import get_existing_password
+            
+            secret_ref = resource.get("spec", {}).get("adminPasswordSecretRef", {})
+            secret_name = secret_ref.get("name")
+            
+            admin_key = None
+            if secret_name:
+                admin_key = get_existing_password(secret_name, resource["metadata"]["namespace"])
                 
+            if admin_key:
                 hostname = f"{resource['metadata']['name']}.{base_domain}"
                 stats = check_players(hostname, admin_key)
-                
-                # Merge stats into status
-                current_status = pipeline.metadata("status.yaml")
-                current_status.update(stats)
-                pipeline.write_status(current_status)
+                status_updates.update(stats)
             else:
-                print("WARNING: Admin key not found at /etc/foundry/credentials/adminPassword")
+                print(f"WARNING: Admin key secret {secret_name} not found or empty")
+            
+        # Write status
+        current_status = pipeline.metadata("status.yaml")
+        current_status.update(status_updates)
+        pipeline.write_status(current_status)
             
         # Step 5: Cleanup for FluxCD
         cleanup_for_flux(pipeline)

@@ -1,9 +1,33 @@
-from foundry_lib.manifest_templates import deployment_template, service_template, pvc_template, rbac_templates
+from kubernetes import client, config
+import base64
+import secrets
+import string
+from foundry_lib.manifest_templates import deployment_template, service_template, pvc_template, rbac_templates, credentials_secret_template
+
+def generate_random_password(length=24):
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for i in range(length))
+
+def get_existing_password(name, namespace):
+    try:
+        # Load config if not already loaded (idempotent)
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+            
+        v1 = client.CoreV1Api()
+        secret = v1.read_namespaced_secret(name, namespace)
+        if secret.data and 'adminPassword' in secret.data:
+            return base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+    except Exception:
+        pass
+    return None
 
 def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain: str = "k8s.orb.local"):
     """
-    Generates Kubernetes manifests for FoundryInstance (Deployment, Service, PVC, RBAC, etc.)
-    Ported from generate-manifests.sh
+    Generates Kubernetes manifests for FoundryInstance.
+    Returns a dict of status updates (e.g. password notification pending).
     """
     instance_name = resource["metadata"]["name"]
     namespace = resource["metadata"]["namespace"]
@@ -20,6 +44,36 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
     proxy_port = spec.get("proxyPort", 443)
     
     hostname = f"{instance_name}.{base_domain}"
+    
+    # Secret Logic
+    secret_ref = spec.get("adminPasswordSecretRef", {})
+    secret_name = secret_ref.get("name")
+    if not secret_name:
+        # Fallback default if not specified (should only happen during migration/dev)
+        secret_name = f"foundry-credentials-{instance_name}"
+        
+    regenerate = spec.get("regeneratePassword", False)
+    
+    admin_password = None
+    status_updates = {}
+    
+    # 1. Check existing
+    existing_pw = get_existing_password(secret_name, namespace)
+    
+    # 2. Decide: Reuse or Generate
+    if existing_pw and not regenerate:
+        print(f"Reusing existing password from secret: {secret_name}")
+        admin_password = existing_pw
+    else:
+        print(f"Generating new password for secret: {secret_name} (Regenerate={regenerate})")
+        admin_password = generate_random_password()
+        status_updates["passwordPendingNotification"] = True
+        
+    # 3. Generate Secret Manifest
+    # ALWAYS write the secret manifest so Kratix manages it (and ensures it exists/persists)
+    secret_manifest = credentials_secret_template(secret_name, namespace, admin_password)
+    pipeline.write_output("secret.yaml", secret_manifest)
+    
     
     storage_backend = volume_info.get("storageBackend", "nfs")
     
@@ -49,6 +103,7 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         proxy_ssl=proxy_ssl,
         proxy_port=proxy_port,
         volume_def=volume_def,
+        admin_secret_name=secret_name,
         monitor_image=monitor_image
     )
     pipeline.write_output("deployment.yaml", deployment)
@@ -64,3 +119,4 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         pipeline.write_output(f"rbac-{kind}.yaml", resource)
     
     print(f"Manifests (including sidecar monitor) generated for instance: {instance_name}")
+    return status_updates

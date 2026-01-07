@@ -27,7 +27,8 @@ class CreateCog(commands.Cog):
         foundry_version='Foundry version (e.g., "12.331")',
         storage_backend='Storage type for data',
         cpu='CPU request/limit (e.g., "500m")',
-        memory='Memory request/limit (e.g., "1Gi")'
+        memory='Memory request/limit (e.g., "1Gi")',
+        unique_password='Generate a unique password for this instance instead of using your default'
     )
     @app_commands.choices(storage_backend=[
         app_commands.Choice(name='NFS (shared storage)', value='nfs'),
@@ -41,7 +42,8 @@ class CreateCog(commands.Cog):
         foundry_version: Optional[str] = None,
         storage_backend: Optional[app_commands.Choice[str]] = None,
         cpu: Optional[str] = None,
-        memory: Optional[str] = None
+        memory: Optional[str] = None,
+        unique_password: bool = False
     ):
         """Create a new FoundryInstance resource."""
         await interaction.response.defer(thinking=True)
@@ -71,10 +73,6 @@ class CreateCog(commands.Cog):
                 return
             
             # Warn but allow if it looks like a version (could be a new one not yet in cache)
-            # optimally we might want to strict block, but user plan said "strict checking against the list is safer"
-            # However, if cache is stale, strict blocking is dangerous.
-            # Let's verify strict check per plan decision, but re-fetch if not found?
-            # For now, strict check as per plan:
             embed = discord.Embed(
                 title='❌ Invalid Version',
                 description=f'Version **{foundry_version}** is not in the supported list.\nSupported versions: {", ".join(valid_versions[:5])}...',
@@ -102,6 +100,13 @@ class CreateCog(commands.Cog):
             )
             await interaction.followup.send(embed=embed)
             return
+            
+        # Determine Secret Name
+        admin_secret_name = None
+        if unique_password:
+            admin_secret_name = f"foundry-admin-{name}"
+        else:
+            admin_secret_name = f"foundry-admin-{interaction.user.id}-default"
         
         # Create the instance
         result = k8s.create_foundry_instance(
@@ -112,7 +117,8 @@ class CreateCog(commands.Cog):
             cpu=cpu,
             memory=memory,
             created_by_id=str(interaction.user.id),
-            created_by_name=str(interaction.user)
+            created_by_name=str(interaction.user),
+            admin_password_secret_name=admin_secret_name
         )
         
         if result['success']:
@@ -124,6 +130,11 @@ class CreateCog(commands.Cog):
             )
             progress_embed.add_field(name='Name', value=name, inline=True)
             progress_embed.add_field(name='License', value=license_name, inline=True)
+            if unique_password:
+                progress_embed.add_field(name='Password', value="Generating unique...", inline=True)
+            else:
+                progress_embed.add_field(name='Password', value="Using default key", inline=True)
+                
             progress_embed.set_footer(text='Waiting for Kratix pipeline to reconcile...')
             
             msg = await interaction.followup.send(embed=progress_embed)
@@ -141,7 +152,42 @@ class CreateCog(commands.Cog):
                 interval_seconds=10
             )
             
+            password_status_msg = ""
+            
             if final_inst:
+                # Check for password notification
+                status = final_inst.get('status', {})
+                if status.get('passwordPendingNotification'):
+                    import base64
+                    try:
+                        secret = k8s.get_secret(admin_secret_name)
+                        if secret and secret.data and 'adminPassword' in secret.data:
+                            pw = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+                            
+                            dm_embed = discord.Embed(
+                                title=f'🔑 Admin Password for {name}',
+                                color=discord.Color.green()
+                            )
+                            if unique_password:
+                                dm_embed.description = f"Here is the **unique** admin password for instance **{name}**:"
+                            else:
+                                dm_embed.description = (
+                                    f"Here is your **default** admin password.\n"
+                                    "This password will be used for all future instances unless you choose otherwise."
+                                )
+                                
+                            dm_embed.add_field(name="Password", value=f"```{pw}```", inline=False)
+                            dm_embed.add_field(name="Instance URL", value=f"https://{name}.{lic.get('spec', {}).get('gateway', {}).get('baseDomain', 'k8s.orb.local')}", inline=False)
+                            
+                            try:
+                                await interaction.user.send(embed=dm_embed)
+                                password_status_msg = "\n🔑 **Password sent via DM!**"
+                            except discord.Forbidden:
+                                password_status_msg = "\n⚠️ **Could not DM password. Please enable DMs.**"
+                    except Exception as e:
+                        print(f"Error fetching/sending password: {e}")
+                        password_status_msg = "\n⚠️ **Error retrieving password.**"
+
                 embed = format_instance_embed(final_inst, is_active_override=False)
                 embed.title = f'✅ Instance Created: {name}'
                 # Get baseDomain from license
@@ -149,6 +195,7 @@ class CreateCog(commands.Cog):
                 embed.description = (
                     'Your instance is ready! Use `/vtt-update` with `activate` to make it live.\n'
                     f'🔗 Once active, access at: https://{name}.{base_domain}'
+                    f'{password_status_msg}'
                 )
                 await msg.edit(embed=embed)
             else:

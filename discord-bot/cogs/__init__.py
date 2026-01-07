@@ -9,4 +9,5 @@ COGS = [
     "cogs.create",
     "cogs.update",
     "cogs.delete",
+    "cogs.password",
 ]

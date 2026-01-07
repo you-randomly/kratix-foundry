@@ -53,7 +53,23 @@ def dnsendpoint_template(name, namespace, hostname, dns_target):
         }
     }
 
-def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_ssl, proxy_port, volume_def, monitor_image=None):
+def credentials_secret_template(name, namespace, admin_password):
+    import base64
+    encoded_pw = base64.b64encode(admin_password.encode()).decode()
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": name,
+            "namespace": namespace
+        },
+        "type": "Opaque",
+        "data": {
+            "adminPassword": encoded_pw
+        }
+    }
+
+def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_ssl, proxy_port, volume_def, admin_secret_name, monitor_image=None):
     deployment = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -125,7 +141,7 @@ def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_s
                                 },
                                 {
                                     "name": "FOUNDRY_ADMIN_KEY",
-                                    "valueFrom": {"secretKeyRef": {"name": "foundry-credentials", "key": "adminPassword"}}
+                                    "valueFrom": {"secretKeyRef": {"name": admin_secret_name, "key": "adminPassword"}}
                                 },
                                 {
                                     "name": "FOUNDRY_LICENSE_KEY",

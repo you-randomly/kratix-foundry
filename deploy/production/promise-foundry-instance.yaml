@@ -55,6 +55,12 @@ spec:
                   proxyPort:
                     type: integer
                     default: 443
+                  adminPasswordSecretRef:
+                    type: object
+                    properties:
+                      name: {type: string}
+                  regeneratePassword:
+                    type: boolean
 
               status:
                 type: object
@@ -65,6 +71,8 @@ spec:
                   activeWorld: {type: string}
                   worldActive: {type: boolean}
                   lastSidecarUpdate: {type: string}
+                  lastSidecarUpdate: {type: string}
+                  passwordPendingNotification: {type: boolean}
                   error: {type: string}
                   conditions:
                     type: array
@@ -89,7 +97,12 @@ spec:
               permissions:
                 - apiGroups: ["foundry.platform"]
                   resources: ["foundrylicenses"]
+                - apiGroups: ["foundry.platform"]
+                  resources: ["foundrylicenses"]
                   verbs: ["get", "list", "watch", "patch"]
+                - apiGroups: [""]
+                  resources: ["secrets"]
+                  verbs: ["get", "create", "update", "patch"]
 
             containers:
               - name: configure
@@ -111,16 +124,10 @@ spec:
                         key: nfs-base-path
                         optional: true
                 volumeMounts:
-                  - name: credentials
-                    mountPath: /etc/foundry/credentials
-                    readOnly: true
                   - name: license
                     mountPath: /etc/foundry/license
                     readOnly: true
             volumes:
-              - name: credentials
-                secret:
-                  secretName: foundry-credentials
               - name: license
                 secret:
                   secretName: foundry-license

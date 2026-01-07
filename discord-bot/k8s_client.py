@@ -239,17 +239,32 @@ def get_foundry_instance(name: str, namespace: str = None) -> Optional[Dict[str,
     
     ns = namespace or FOUNDRY_NAMESPACE
     try:
-        return k8s_api.get_namespaced_custom_object(
-            group=CRD_GROUP,
-            version=CRD_VERSION,
-            namespace=ns,
-            plural=CRD_INSTANCE_PLURAL,
-            name=name
-        )
+        if k8s_api is None:
+             return None
+        return k8s.core_v1.read_namespaced_secret(name, ns)
     except ApiException as e:
         if e.status == 404:
             return None
-        print(f'Error getting FoundryInstance {name}: {e}')
+        print(f'Error getting secret {name}: {e}')
+        return None
+
+
+def get_secret(name: str, namespace: str = None) -> Optional[client.V1Secret]:
+    """Get a Secret by name."""
+    # We need CoreV1Api for secrets, check if initialized
+    if not k8s_api:
+        return None
+        
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        # We need a CoreV1Api instance. We can create one on the fly or reuse if we stored it.
+        # k8s_api is CustomObjectsApi. Let's create CoreV1Api if needed.
+        core_api = client.CoreV1Api()
+        return core_api.read_namespaced_secret(name, ns)
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        print(f'Error getting Secret {name}: {e}')
         return None
 
 
@@ -262,7 +277,9 @@ def create_foundry_instance(
     cpu: Optional[str] = None,
     memory: Optional[str] = None,
     created_by_id: Optional[str] = None,
-    created_by_name: Optional[str] = None
+    created_by_name: Optional[str] = None,
+    admin_password_secret_name: Optional[str] = None,
+    regenerate_password: bool = False
 ) -> Dict[str, Any]:
     """Create a FoundryInstance resource.
     
@@ -291,6 +308,12 @@ def create_foundry_instance(
             spec['resources']['cpu'] = cpu
         if memory:
             spec['resources']['memory'] = memory
+            
+    if admin_password_secret_name:
+        spec['adminPasswordSecretRef'] = {'name': admin_password_secret_name}
+        
+    if regenerate_password:
+        spec['regeneratePassword'] = True
     
     # Build the full resource
     instance = {

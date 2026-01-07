@@ -3,14 +3,19 @@ from unittest.mock import MagicMock, patch
 import sys
 import os
 
-# Add scripts and lib to path
-sys.path.append("/Users/hd25646/Documents/kratix-foundry/promises/foundry-license/configure-pipeline/scripts")
-sys.path.append("/Users/hd25646/Documents/kratix-foundry/lib")
+# Add scripts and lib to path using relative paths
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+scripts_path = os.path.join(project_root, "promises/foundry-license/configure-pipeline/scripts")
+lib_path = os.path.join(project_root, "lib")
+
+sys.path.append(scripts_path)
+sys.path.append(lib_path)
 
 # Mock kubernetes before importing generate_route
 sys.modules['kubernetes'] = MagicMock()
 sys.modules['kubernetes.client'] = MagicMock()
 sys.modules['kubernetes.config'] = MagicMock()
+sys.modules['requests'] = MagicMock()
 
 import generate_route
 
@@ -85,6 +90,34 @@ class TestGenerateRoute(unittest.TestCase):
         self.assertEqual(status["activeInstance"], "instance-2")
         self.assertNotIn("warning", status)
         mock_check.assert_not_called()
+
+    @patch('generate_route.check_players')
+    def test_public_ip_creates_dns_endpoint(self, mock_check):
+        # Setup: Public IP configured
+        self.resource["spec"]["gateway"] = {
+            "publicIP": "1.2.3.4",
+            "parentRef": {"name": "gw", "namespace": "ns"}
+        }
+        mock_check.return_value = {"connectedPlayers": 0}
+        
+        generate_route.generate_routes(self.pipeline, self.resource, self.admin_key)
+        
+        # Check that write_output was called for DNSEndpoints
+        # We expect calls for route-instance-1, route-instance-2, dns-instance-1, dns-instance-2
+        
+        # Extract all filenames passed to write_output
+        calls = self.pipeline.write_output.call_args_list
+        filenames = [call.args[0] for call in calls]
+        
+        self.assertIn("dns-instance-1.yaml", filenames)
+        self.assertIn("dns-instance-2.yaml", filenames)
+        
+        # Verify content of one DNS endpoint
+        dns_call = next(call for call in calls if call.args[0] == "dns-instance-2.yaml")
+        dns_content = dns_call.args[1]
+        
+        self.assertEqual(dns_content["kind"], "DNSEndpoint")
+        self.assertEqual(dns_content["spec"]["endpoints"][0]["targets"], ["1.2.3.4"])
 
 if __name__ == '__main__':
     unittest.main()
