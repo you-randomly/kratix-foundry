@@ -2,6 +2,7 @@ apiVersion: platform.kratix.io/v1alpha1
 kind: Promise
 metadata:
   name: foundry-instance
+  namespace: kratix-platform-system
 spec:
   destinationSelectors:
   - matchLabels:
