@@ -108,7 +108,8 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         proxy_port=proxy_port,
         volume_def=volume_def,
         admin_secret_name=secret_name,
-        monitor_image=monitor_image
+        monitor_image=monitor_image,
+        storage_backend=storage_backend
     )
     pipeline.write_output("deployment.yaml", deployment)
     

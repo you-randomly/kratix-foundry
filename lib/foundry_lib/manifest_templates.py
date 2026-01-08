@@ -69,7 +69,19 @@ def credentials_secret_template(name, namespace, admin_password):
         }
     }
 
-def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_ssl, proxy_port, volume_def, admin_secret_name, monitor_image=None):
+def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_ssl, proxy_port, volume_def, admin_secret_name, monitor_image=None, storage_backend="pvc"):
+    # Only use chown init container for PVC storage, NFS doesn't allow ownership changes
+    init_containers = []
+    if storage_backend == "pvc":
+        init_containers = [
+            {
+                "name": "volume-permissions",
+                "image": "busybox:1.36",
+                "command": ["sh", "-c", "chown -R 1000:1000 /data"],
+                "volumeMounts": [{"name": "data", "mountPath": "/data"}]
+            }
+        ]
+    
     deployment = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -99,14 +111,7 @@ def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_s
                 },
                 "spec": {
                     "serviceAccountName": f"foundry-{name}-monitor",
-                    "initContainers": [
-                        {
-                            "name": "volume-permissions",
-                            "image": "busybox:1.36",
-                            "command": ["sh", "-c", "chown -R 1000:1000 /data"],
-                            "volumeMounts": [{"name": "data", "mountPath": "/data"}]
-                        }
-                    ],
+                    "initContainers": init_containers,
                     "containers": [
                         {
                             "name": "foundry-vtt",
