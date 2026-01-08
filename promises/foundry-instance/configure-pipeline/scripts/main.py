@@ -49,9 +49,12 @@ def main():
                 print(f"WARNING: Admin key secret {secret_name} not found or empty")
             
         # Write status
-        current_status = pipeline.metadata("status.yaml")
-        current_status.update(status_updates)
-        pipeline.write_status(current_status)
+        # We only write the updates we have calculated.
+        # We do NOT read 'current_status' from the input and echo it back, 
+        # because that snapshot is stale and would overwrite changes made by the Discord bot
+        # (specifically clearing the passwordPendingNotification flag).
+        # Kratix/K8s will merge these updates with the existing status.
+        pipeline.write_status(status_updates)
             
         # Step 5: Cleanup for FluxCD
         cleanup_for_flux(pipeline)
