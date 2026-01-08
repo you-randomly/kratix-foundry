@@ -70,9 +70,13 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         status_updates["passwordPendingNotification"] = True
         
     # 3. Generate Secret Manifest
-    # ALWAYS write the secret manifest so Kratix manages it (and ensures it exists/persists)
-    secret_manifest = credentials_secret_template(secret_name, namespace, admin_password)
-    pipeline.write_output("secret.yaml", secret_manifest)
+    # Only generate if it's the default (dedicated) secret. Shared secrets should be managed externally or by the first instance.
+    default_secret_name = f"foundry-credentials-{instance_name}"
+    if secret_name == default_secret_name:
+        secret_manifest = credentials_secret_template(secret_name, namespace, admin_password)
+        pipeline.write_output("secret.yaml", secret_manifest)
+    else:
+        print(f"Skipping generation of shared/external secret: {secret_name}")
     
     
     storage_backend = volume_info.get("storageBackend", "nfs")
