@@ -163,16 +163,46 @@ spec:
                   admin_password = generate_random_password()
                   status_updates["passwordPendingNotification"] = True
                   
-              # 3. Generate Secret Manifest
-              # Only generate if secret doesn't already exist (or if regenerating)
+              # 3. Create Secret via Kubernetes API (not via Kratix output)
+              # This avoids Flux conflicts when multiple instances share a secret
+              try:
+                  config.load_incluster_config()
+              except config.ConfigException:
+                  config.load_kube_config()
+              
+              v1 = client.CoreV1Api()
+              
               if existing_pw and not regenerate:
-                  # Secret exists and not regenerating, skip generation
-                  print(f"Secret '{secret_name}' exists, skipping generation")
+                  # Secret exists and not regenerating, skip creation
+                  print(f"Secret '{secret_name}' exists, skipping creation")
+              elif regenerate:
+                  # Regenerating - update existing secret
+                  import base64
+                  secret_data = {
+                      "adminPassword": base64.b64encode(admin_password.encode()).decode()
+                  }
+                  v1.patch_namespaced_secret(secret_name, namespace, {"data": secret_data})
+                  print(f"Regenerated secret via API: {secret_name}")
               else:
-                  # Secret doesn't exist OR regenerating - create/update it
-                  secret_manifest = credentials_secret_template(secret_name, namespace, admin_password)
-                  pipeline.write_output("secret.yaml", secret_manifest)
-                  print(f"Generated secret manifest: {secret_name}")
+                  # Secret doesn't exist - create it
+                  import base64
+                  secret_data = {
+                      "adminPassword": base64.b64encode(admin_password.encode()).decode()
+                  }
+                  secret_body = client.V1Secret(
+                      metadata=client.V1ObjectMeta(name=secret_name, namespace=namespace),
+                      data=secret_data,
+                      type="Opaque"
+                  )
+                  try:
+                      v1.create_namespaced_secret(namespace, secret_body)
+                      print(f"Created secret via API: {secret_name}")
+                  except client.exceptions.ApiException as e:
+                      if e.status == 409:
+                          # Secret was created by another instance (race), just use it
+                          print(f"Secret '{secret_name}' already exists (created by another instance)")
+                      else:
+                          raise
               
               
               storage_backend = volume_info.get("storageBackend", "nfs")
