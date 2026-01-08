@@ -81,8 +81,8 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
     if existing_pw and not regenerate:
         # Secret exists and not regenerating, skip creation
         print(f"Secret '{secret_name}' exists, skipping creation")
-    elif regenerate:
-        # Regenerating - update existing secret
+    elif existing_pw and regenerate:
+        # Secret exists AND regenerating - update it
         import base64
         secret_data = {
             "adminPassword": base64.b64encode(admin_password.encode()).decode()
@@ -90,7 +90,7 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         v1.patch_namespaced_secret(secret_name, namespace, {"data": secret_data})
         print(f"Regenerated secret via API: {secret_name}")
     else:
-        # Secret doesn't exist - create it
+        # Secret doesn't exist - create it (regardless of regenerate flag)
         import base64
         secret_data = {
             "adminPassword": base64.b64encode(admin_password.encode()).decode()

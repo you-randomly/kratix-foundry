@@ -324,8 +324,6 @@ spec:
               permissions:
                 - apiGroups: ["foundry.platform"]
                   resources: ["foundrylicenses"]
-                - apiGroups: ["foundry.platform"]
-                  resources: ["foundrylicenses"]
                   verbs: ["get", "list", "watch", "patch"]
                 - apiGroups: [""]
                   resources: ["secrets"]
