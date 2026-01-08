@@ -1,15 +1,6 @@
 # MinIO StateStore Infrastructure for Kratix + FluxCD
 ---
 apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: foundry-nfs-config
-  namespace: kratix-platform-system
-data:
-  nfs-server-host: "192.168.200.184"
-  nfs-base-path: "/volume1/foundry"
----
-apiVersion: v1
 kind: Secret
 metadata:
   name: minio-creds

@@ -112,17 +112,9 @@ spec:
                 command: ["python3", "/app/scripts/main.py"]
                 env:
                   - name: NFS_SERVER_HOST
-                    valueFrom:
-                      configMapKeyRef:
-                        name: foundry-nfs-config
-                        key: nfs-server-host
-                        optional: true
+                    value: "192.168.200.184"
                   - name: NFS_BASE_PATH
-                    valueFrom:
-                      configMapKeyRef:
-                        name: foundry-nfs-config
-                        key: nfs-base-path
-                        optional: true
+                    value: "/volume1/foundry"
                 volumeMounts:
                   - name: license
                     mountPath: /etc/foundry/license
