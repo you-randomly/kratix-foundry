@@ -70,13 +70,19 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         status_updates["passwordPendingNotification"] = True
         
     # 3. Generate Secret Manifest
-    # Only generate if it's the default (dedicated) secret. Shared secrets should be managed externally or by the first instance.
+    # Generate if: (a) it's the default dedicated secret, OR (b) shared secret doesn't exist yet
     default_secret_name = f"foundry-credentials-{instance_name}"
-    if secret_name == default_secret_name:
+    is_shared_secret = (secret_name != default_secret_name)
+    
+    if is_shared_secret and existing_pw:
+        # Shared secret already exists, skip generation to avoid Flux conflicts
+        print(f"Skipping generation of existing shared secret: {secret_name}")
+    else:
+        # Create secret (either dedicated, or shared that doesn't exist)
         secret_manifest = credentials_secret_template(secret_name, namespace, admin_password)
         pipeline.write_output("secret.yaml", secret_manifest)
-    else:
-        print(f"Skipping generation of shared/external secret: {secret_name}")
+        if is_shared_secret:
+            print(f"Creating shared secret (first use): {secret_name}")
     
     
     storage_backend = volume_info.get("storageBackend", "nfs")
