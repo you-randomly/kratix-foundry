@@ -34,6 +34,22 @@ def setup_nfs_volume(pipeline, resource: dict) -> dict:
     print(f"  Plugins: {plugin_path}")
     print(f"  Worlds: {world_path}")
 
+    # Create directories on NFS if the root is mounted
+    nfs_mount_root = os.environ.get("NFS_MOUNT_ROOT", "/mnt/nfs-root")
+    if storage_backend == "nfs" and os.path.ismount(nfs_mount_root):
+        print(f"NFS root mounted at {nfs_mount_root}, creating directories...")
+        # Calculate the relative path from nfs_base to data_path
+        relative_data_path = data_path.replace(nfs_base, "").lstrip("/")
+        full_modules_path = os.path.join(nfs_mount_root, relative_data_path, "Data", "modules")
+        full_worlds_path = os.path.join(nfs_mount_root, relative_data_path, "Data", "worlds")
+        
+        os.makedirs(full_modules_path, exist_ok=True)
+        os.makedirs(full_worlds_path, exist_ok=True)
+        print(f"  Created: {full_modules_path}")
+        print(f"  Created: {full_worlds_path}")
+    else:
+        print(f"NFS root not mounted at {nfs_mount_root}, skipping directory creation.")
+
     volume_info = {
         "nfsServer": nfs_server,
         "dataPath": data_path,
@@ -46,3 +62,4 @@ def setup_nfs_volume(pipeline, resource: dict) -> dict:
     pipeline.write_metadata("volume-info.yaml", volume_info)
     
     return volume_info
+

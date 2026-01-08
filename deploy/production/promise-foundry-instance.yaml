@@ -219,6 +219,66 @@ spec:
               print(f"Manifests (including sidecar monitor) generated for instance: {instance_name}")
               return status_updates
 
+        setup_volume.py: |
+          def setup_nfs_volume(pipeline, resource: dict) -> dict:
+              """
+              Creates or references NFS volumes for instance data.
+              """
+              import os
+              
+              instance_name = resource["metadata"]["name"]
+              spec = resource.get("spec", {})
+              
+              storage_backend = spec.get("storageBackend", "nfs")
+              
+              nfs_server = os.environ.get("NFS_SERVER_HOST")
+              if storage_backend == "nfs" and not nfs_server:
+                  raise ValueError(
+                      "NFS storage backend selected but NFS_SERVER_HOST environment variable is not set. "
+                      "Either set NFS_SERVER_HOST to your NFS server address, or use storageBackend: pvc"
+                  )
+              
+              nfs_base = os.environ.get("NFS_BASE_PATH", "/exports")
+              
+              data_path = spec.get("nfsBasePath")
+              if not data_path or data_path == "null":
+                  data_path = f"{nfs_base}/instances/{instance_name}"
+                  
+              plugin_path = f"{data_path}/Data/modules"
+              world_path = f"{data_path}/Data/worlds"
+              
+              print("Volume paths resolved:")
+              print(f"  Data: {data_path}")
+              print(f"  Plugins: {plugin_path}")
+              print(f"  Worlds: {world_path}")
+          
+              # Create directories on NFS if the root is mounted
+              nfs_mount_root = os.environ.get("NFS_MOUNT_ROOT", "/mnt/nfs-root")
+              if storage_backend == "nfs" and os.path.ismount(nfs_mount_root):
+                  print(f"NFS root mounted at {nfs_mount_root}, creating directories...")
+                  relative_data_path = data_path.replace(nfs_base, "").lstrip("/")
+                  full_modules_path = os.path.join(nfs_mount_root, relative_data_path, "Data", "modules")
+                  full_worlds_path = os.path.join(nfs_mount_root, relative_data_path, "Data", "worlds")
+                  
+                  os.makedirs(full_modules_path, exist_ok=True)
+                  os.makedirs(full_worlds_path, exist_ok=True)
+                  print(f"  Created: {full_modules_path}")
+                  print(f"  Created: {full_worlds_path}")
+              else:
+                  print(f"NFS root not mounted at {nfs_mount_root}, skipping directory creation.")
+          
+              volume_info = {
+                  "nfsServer": nfs_server,
+                  "dataPath": data_path,
+                  "pluginPath": plugin_path,
+                  "worldPath": world_path,
+                  "storageBackend": storage_backend
+              }
+              
+              pipeline.write_metadata("volume-info.yaml", volume_info)
+              
+              return volume_info
+
   workflows:
     resource:
       configure:
@@ -249,6 +309,8 @@ spec:
                     value: "192.168.200.184"
                   - name: NFS_BASE_PATH
                     value: "/volume1/foundry"
+                  - name: NFS_MOUNT_ROOT
+                    value: "/mnt/nfs-root"
                 volumeMounts:
                   - name: license
                     mountPath: /etc/foundry/license
@@ -256,6 +318,11 @@ spec:
                   - name: pipeline-scripts
                     mountPath: /app/scripts/generate_manifests.py
                     subPath: generate_manifests.py
+                  - name: pipeline-scripts
+                    mountPath: /app/scripts/setup_volume.py
+                    subPath: setup_volume.py
+                  - name: nfs-root
+                    mountPath: /mnt/nfs-root
             volumes:
               - name: license
                 secret:
@@ -263,6 +330,10 @@ spec:
               - name: pipeline-scripts
                 configMap:
                   name: pipeline-scripts
+              - name: nfs-root
+                nfs:
+                  server: 192.168.200.184
+                  path: /volume1/foundry
       delete:
         - apiVersion: platform.kratix.io/v1alpha1
           kind: Pipeline
