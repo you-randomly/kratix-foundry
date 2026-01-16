@@ -22,10 +22,10 @@ metadata:
 rules:
   # Read/write FoundryInstances and FoundryLicenses
   - apiGroups: ["foundry.platform"]
-    resources: ["foundryinstances", "foundrylicenses"]
+    resources: ["foundryinstances", "foundrylicenses", "foundrypasswords"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["foundry.platform"]
-    resources: ["foundryinstances/status", "foundrylicenses/status"]
+    resources: ["foundryinstances/status", "foundrylicenses/status", "foundrypasswords/status"]
     verbs: ["get", "update", "patch"]
   # Read secrets for license refs
   - apiGroups: [""]
