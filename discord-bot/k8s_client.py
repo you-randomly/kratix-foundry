@@ -22,6 +22,11 @@ from cache import instances_cache, licenses_cache, licenses_list_cache, crd_sche
 k8s_api: Optional[client.CustomObjectsApi] = None
 k8s_extensions_api: Optional[client.ApiextensionsV1Api] = None
 
+# External Secrets Operator constants
+ESO_GROUP = "external-secrets.io"
+ESO_VERSION = "v1"
+ESO_PLURAL = "externalsecrets"
+
 
 def init_kubernetes() -> bool:
     """Initialize Kubernetes client. Returns True if successful."""
@@ -273,6 +278,145 @@ def get_secret(name: str, namespace: str = None) -> Optional[client.V1Secret]:
         return None
 
 
+# ============================================================================
+# External Secrets Operator (ESO) Functions
+# ============================================================================
+
+def get_external_secret(name: str, namespace: str = None) -> Optional[Dict[str, Any]]:
+    """Get an ExternalSecret by name."""
+    if not k8s_api:
+        return None
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        return k8s_api.get_namespaced_custom_object(
+            group=ESO_GROUP,
+            version=ESO_VERSION,
+            namespace=ns,
+            plural=ESO_PLURAL,
+            name=name
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        print(f'Error getting ExternalSecret {name}: {e}')
+        return None
+
+
+def get_external_secrets_for_instance(instance_name: str, namespace: str = None) -> List[Dict[str, Any]]:
+    """Get ExternalSecrets associated with a Foundry instance."""
+    if not k8s_api:
+        return []
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        result = k8s_api.list_namespaced_custom_object(
+            group=ESO_GROUP,
+            version=ESO_VERSION,
+            namespace=ns,
+            plural=ESO_PLURAL,
+            label_selector=f"foundry.platform/instance={instance_name}"
+        )
+        return result.get('items', [])
+    except ApiException as e:
+        print(f'Error listing ExternalSecrets: {e}')
+        return []
+
+
+def list_external_secrets(namespace: str = None, label_selector: str = None) -> List[Dict[str, Any]]:
+    """List all ExternalSecrets, optionally filtered by label selector."""
+    if not k8s_api:
+        return []
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        kwargs = {
+            'group': ESO_GROUP,
+            'version': ESO_VERSION,
+            'namespace': ns,
+            'plural': ESO_PLURAL
+        }
+        if label_selector:
+            kwargs['label_selector'] = label_selector
+        result = k8s_api.list_namespaced_custom_object(**kwargs)
+        return result.get('items', [])
+    except ApiException as e:
+        print(f'Error listing ExternalSecrets: {e}')
+        return []
+
+
+def is_external_secret_synced(es: Dict[str, Any]) -> bool:
+    """Check if an ExternalSecret has successfully synced (Ready=True)."""
+    conditions = es.get('status', {}).get('conditions', [])
+    for cond in conditions:
+        if cond.get('type') == 'Ready' and cond.get('status') == 'True':
+            return True
+    return False
+
+
+def get_external_secret_refresh_time(es: Dict[str, Any]) -> Optional[str]:
+    """Get the last refresh time from an ExternalSecret status."""
+    return es.get('status', {}).get('refreshTime')
+
+
+def refresh_external_secret(name: str, namespace: str = None) -> Dict[str, Any]:
+    """Trigger refresh of an ExternalSecret by annotating with force-sync."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    import time
+    
+    try:
+        patch_body = {
+            "metadata": {
+                "annotations": {
+                    "force-sync": str(int(time.time()))
+                }
+            }
+        }
+        k8s_api.patch_namespaced_custom_object(
+            group=ESO_GROUP,
+            version=ESO_VERSION,
+            namespace=ns,
+            plural=ESO_PLURAL,
+            name=name,
+            body=patch_body
+        )
+        return {'success': True, 'message': f'Triggered refresh for ExternalSecret "{name}"'}
+    except ApiException as e:
+        if e.status == 404:
+            return {'success': False, 'message': f'ExternalSecret "{name}" not found'}
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to refresh: {error_msg}'}
+
+
+def annotate_external_secret(name: str, annotations: Dict[str, str], namespace: str = None) -> Dict[str, Any]:
+    """Add or update annotations on an ExternalSecret."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    
+    try:
+        patch_body = {
+            "metadata": {
+                "annotations": annotations
+            }
+        }
+        k8s_api.patch_namespaced_custom_object(
+            group=ESO_GROUP,
+            version=ESO_VERSION,
+            namespace=ns,
+            plural=ESO_PLURAL,
+            name=name,
+            body=patch_body
+        )
+        return {'success': True, 'message': f'Updated annotations on ExternalSecret "{name}"'}
+    except ApiException as e:
+        if e.status == 404:
+            return {'success': False, 'message': f'ExternalSecret "{name}" not found'}
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to annotate: {error_msg}'}
+
+
 def create_foundry_instance(
     name: str,
     license_name: str,
@@ -283,8 +427,7 @@ def create_foundry_instance(
     memory: Optional[str] = None,
     created_by_id: Optional[str] = None,
     created_by_name: Optional[str] = None,
-    admin_password_secret_name: Optional[str] = None,
-    regenerate_password: bool = False
+    admin_password_secret_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """Create a FoundryInstance resource.
     
@@ -316,9 +459,6 @@ def create_foundry_instance(
             
     if admin_password_secret_name:
         spec['adminPasswordSecretRef'] = {'name': admin_password_secret_name}
-        
-    if regenerate_password:
-        spec['regeneratePassword'] = True
     
     # Build the full resource
     instance = {

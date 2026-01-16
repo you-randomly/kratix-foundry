@@ -12,6 +12,25 @@ from check_license import check_license
 from setup_volume import setup_nfs_volume
 from generate_manifests import generate_manifests
 
+def get_admin_password_from_secret(secret_name: str, namespace: str) -> str:
+    """Read admin password from the secret managed by ESO."""
+    try:
+        from kubernetes import client, config
+        import base64
+        
+        try:
+            config.load_incluster_config()
+        except config.ConfigException:
+            config.load_kube_config()
+        
+        v1 = client.CoreV1Api()
+        secret = v1.read_namespaced_secret(secret_name, namespace)
+        if secret.data and 'adminPassword' in secret.data:
+            return base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+    except Exception as e:
+        print(f"Could not read admin password from secret {secret_name}: {e}")
+    return None
+
 def main():
     try:
         pipeline = Pipeline()
@@ -24,36 +43,32 @@ def main():
         # Step 2: Setup Volume
         volume_info = setup_nfs_volume(pipeline, resource)
         
-        # Step 3: Generate Manifests
-        status_updates = generate_manifests(pipeline, resource, volume_info, base_domain)
+        # Step 3: Generate Manifests (including ExternalSecret for password)
+        generate_manifests(pipeline, resource, volume_info, base_domain)
         
         # Step 4: Add Player Status (if active)
+        status_updates = {}
         if is_active:
             print("Checking player status for active instance...")
-            # Read admin key from Secret using the helper in generate_manifests
-            # (Imports are available since we imported generate_manifests)
-            from generate_manifests import get_existing_password
             
+            # Get secret name (same logic as generate_manifests)
             secret_ref = resource.get("spec", {}).get("adminPasswordSecretRef", {})
             secret_name = secret_ref.get("name")
+            if not secret_name:
+                secret_name = f"foundry-credentials-{resource['metadata']['name']}"
             
-            admin_key = None
-            if secret_name:
-                admin_key = get_existing_password(secret_name, resource["metadata"]["namespace"])
+            # Note: On first creation, the secret may not exist yet (ESO creates it async)
+            # The player check will fail gracefully in that case
+            admin_key = get_admin_password_from_secret(secret_name, resource["metadata"]["namespace"])
                 
             if admin_key:
                 hostname = f"{resource['metadata']['name']}.{base_domain}"
                 stats = check_players(hostname, admin_key)
                 status_updates.update(stats)
             else:
-                print(f"WARNING: Admin key secret {secret_name} not found or empty")
+                print(f"WARNING: Admin key secret {secret_name} not found or empty (may be pending ESO sync)")
             
-        # Write status
-        # We only write the updates we have calculated.
-        # We do NOT read 'current_status' from the input and echo it back, 
-        # because that snapshot is stale and would overwrite changes made by the Discord bot
-        # (specifically clearing the passwordPendingNotification flag).
-        # Kratix/K8s will merge these updates with the existing status.
+        # Write status updates
         pipeline.write_status(status_updates)
             
         # Step 5: Cleanup for FluxCD

@@ -53,22 +53,6 @@ def dnsendpoint_template(name, namespace, hostname, dns_target):
         }
     }
 
-def credentials_secret_template(name, namespace, admin_password):
-    import base64
-    encoded_pw = base64.b64encode(admin_password.encode()).decode()
-    return {
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {
-            "name": name,
-            "namespace": namespace
-        },
-        "type": "Opaque",
-        "data": {
-            "adminPassword": encoded_pw
-        }
-    }
-
 def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_ssl, proxy_port, volume_def, admin_secret_name, monitor_image=None, storage_backend="pvc"):
     # Only use chown init container for PVC storage, NFS doesn't allow ownership changes
     init_containers = []

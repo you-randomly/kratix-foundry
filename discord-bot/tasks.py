@@ -4,6 +4,7 @@ Background tasks and async utilities for the Foundry bot.
 
 import time
 import asyncio
+import base64
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 
@@ -83,142 +84,117 @@ async def wait_for_resource_condition(
     return None
 
 
+# Annotation used to track when we last notified about a password
+PASSWORD_NOTIFIED_ANNOTATION = "foundry.platform/password-notified-at"
+
+
 @tasks.loop(seconds=15)
 async def check_password_notifications(bot):
-    """Background task to notify users of generated passwords."""
+    """Background task to notify users of generated/refreshed passwords via ESO.
+    
+    Monitors ExternalSecrets for Foundry instances and sends DM notifications
+    when a password has been synced (either created or refreshed).
+    """
     if not k8s.is_connected():
         return
         
     try:
-        instances = k8s.get_foundry_instances(use_cache=False)
-        for inst in instances:
-            status = inst.get('status', {})
-            if status.get('passwordPendingNotification'):
-                name = inst['metadata']['name']
-                namespace = inst['metadata']['namespace']
-                annotations = inst['metadata'].get('annotations', {})
-                creator_id = annotations.get('foundry.platform/created-by-id')
-                
-                if not creator_id:
-                    print(f"Skipping password notification for {name}: No created-by-id annotation")
+        # Get all ExternalSecrets with foundry.platform/instance label
+        es_list = k8s.list_external_secrets(
+            namespace=k8s.FOUNDRY_NAMESPACE,
+            label_selector="foundry.platform/instance"
+        )
+        
+        for es in es_list:
+            try:
+                # Check if synced (Ready=True)
+                if not k8s.is_external_secret_synced(es):
                     continue
-                    
-                print(f"Processing password notification for {name}")
                 
-                # Fetch secret
-                secret_ref = inst.get('spec', {}).get('adminPasswordSecretRef', {})
-                secret_name = secret_ref.get('name')
+                es_name = es['metadata']['name']
+                namespace = es['metadata']['namespace']
+                annotations = es.get('metadata', {}).get('annotations', {})
                 
-                # Fallback if ref managed by pipeline but not yet in spec? No, pipeline updates spec? 
-                # Actually, our pipeline creates the secret and deployment, but DOES NOT update the spec to add the ref.
-                # The spec is user-defined. The pipeline uses what's in spec.
-                # If spec didn't have ref, pipeline used a default name and passed it to deployment.
-                # BUT, pipeline does not patch the CRD spec to add the ref.
-                # So if we didn't put it in spec during create, it won't be there.
+                # Get the refresh time from ESO status
+                refresh_time = k8s.get_external_secret_refresh_time(es)
+                if not refresh_time:
+                    continue
                 
+                # Check if we already notified for this refresh
+                last_notified = annotations.get(PASSWORD_NOTIFIED_ANNOTATION)
+                if last_notified and last_notified >= refresh_time:
+                    continue
+                
+                # Get instance name from label
+                instance_name = es['metadata'].get('labels', {}).get('foundry.platform/instance')
+                if not instance_name:
+                    continue
+                
+                # Get the instance to find creator
+                instance = k8s.get_foundry_instance(instance_name, namespace)
+                if not instance:
+                    print(f"Instance {instance_name} not found for ExternalSecret {es_name}")
+                    continue
+                
+                creator_id = instance['metadata'].get('annotations', {}).get('foundry.platform/created-by-id')
+                if not creator_id:
+                    print(f"No creator ID for instance {instance_name}, skipping notification")
+                    continue
+                
+                # Get password from the secret created by ESO
+                secret_name = es.get('spec', {}).get('target', {}).get('name')
                 if not secret_name:
-                    # Fallback logic mirroring generate_manifests.py
-                    secret_name = f"foundry-credentials-{name}" # Old default or new fallback?
-                    # The `create.py` logic now ADDS the secret ref to spec.
-                    # So for new instances, it will be there.
-                    # For `reset-default`, we don't know the secret name from spec if it wasn't there?
-                    # Actually `reset-default` deletes the secret `foundry-admin-<uid>-default`.
-                    # Instances using it should have it in spec if created with new code.
-                    pass
-
-                import base64
-                password = None
+                    secret_name = es_name  # ESO defaults to ExternalSecret name
+                
+                secret = k8s.get_secret(secret_name, namespace)
+                if not secret or not secret.data or 'adminPassword' not in secret.data:
+                    print(f"Secret {secret_name} not found or missing adminPassword")
+                    continue
+                
+                password = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+                
+                # Send DM to creator
                 try:
-                    secret = k8s.get_secret(secret_name, namespace)
-                    if secret and secret.data and 'adminPassword' in secret.data:
-                        password = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+                    user = await bot.fetch_user(int(creator_id))
+                    if user:
+                        # Get license for domain info
+                        license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
+                        base_domain = "k8s.orb.local"
+                        if license_name:
+                            lic = k8s.get_foundry_license(license_name, namespace)
+                            if lic:
+                                base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', base_domain)
+                        
+                        embed = discord.Embed(
+                            title='🔑 Admin Password for Foundry Instance',
+                            description=f"The admin password for instance **{instance_name}** has been generated/reset.",
+                            color=discord.Color.green()
+                        )
+                        embed.add_field(name="Instance", value=instance_name, inline=True)
+                        embed.add_field(name="Password", value=f"```{password}```", inline=False)
+                        embed.add_field(name="URL", value=f"https://{instance_name}.{base_domain}", inline=False)
+                        embed.set_footer(text="Keep this password safe! You can reset it anytime with /vtt-password reset-instance")
+                        
+                        await user.send(embed=embed)
+                        print(f"Sent password DM to user {creator_id} for instance {instance_name}")
+                        
+                        # Mark as notified by annotating the ExternalSecret
+                        k8s.annotate_external_secret(
+                            es_name,
+                            {PASSWORD_NOTIFIED_ANNOTATION: refresh_time},
+                            namespace
+                        )
+                        print(f"Marked ExternalSecret {es_name} as notified at {refresh_time}")
+                        
+                except discord.NotFound:
+                    print(f"User {creator_id} not found, cannot send password DM")
+                except discord.Forbidden:
+                    print(f"Cannot send DM to user {creator_id} (DMs disabled)")
                 except Exception as e:
-                    print(f"Error fetching secret {secret_name}: {e}")
+                    print(f"Failed to send DM to user {creator_id}: {e}")
                     
-                if password:
-                    # Send DM
-                    try:
-                        user = await bot.fetch_user(int(creator_id))
-                        if user:
-                            # Fetch license for domain info
-                            license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
-                            base_domain = "k8s.orb.local"
-                            if license_name:
-                                lic = k8s.get_foundry_license(license_name, namespace)
-                                if lic:
-                                    base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', base_domain)
-                            
-                            embed = discord.Embed(
-                                title=f'🔑 Admin Password for active instance',
-                                description=f"The admin password for instance **{name}** has been generated/reset.",
-                                color=discord.Color.green()
-                            )
-                            embed.add_field(name="Instance", value=name, inline=True)
-                            embed.add_field(name="Password", value=f"```{password}```", inline=False)
-                            embed.add_field(name="URL", value=f"https://{name}.{base_domain}", inline=False)
-                            
-                            await user.send(embed=embed)
-                            print(f"Sent password DM to user {creator_id}")
-                            
-                            # Update status to remove pending flag
-                            # We can't easily patch *just* the status via CustomObjectsApi patch unless we use /status subresource
-                            # k8s_api is CustomObjectsApi. 
-                            # We need to set passwordPendingNotification: false
-                            
-                            # Note: The pipeline sets it to true.
-                            # If we set it to false, we are acknowledging it.
-                            
-                            # We need to patch the STATUS.
-                            # Python client patch_namespaced_custom_object usually patches spec/metadata unless we access /status.
-                            # Actually, patch works on the whole object. status is a subresource.
-                            # If we patch the object, status might be ignored if subresources are enabled.
-                            # We should use patch_namespaced_custom_object_status if available?
-                            # k8s python client: patch_namespaced_custom_object_status exists? Yes.
-                            
-                            # But wait, `k8s_client.py` doesn't expose it.
-                            # I should access `k8s.k8s_api` directly.
-                            
-                            status_patch = {
-                                "status": {
-                                    "passwordPendingNotification": None # Set to null to remove? Or false.
-                                }
-                            }
-                            # Using None to remove field
-                            
-                            k8s.k8s_api.patch_namespaced_custom_object(
-                                group=k8s.CRD_GROUP,
-                                version=k8s.CRD_VERSION,
-                                namespace=namespace,
-                                plural=k8s.CRD_INSTANCE_PLURAL,
-                                name=name,
-                                body=status_patch
-                            )
-                            # Wait, if I patch the main object, status might not update if status subresource is enabled.
-                            # But if I try to simple patch, it might work.
-                            # If not, I need to call status endpoint.
-                            # Check `manifest_templates.py` rbac: 
-                            # verbs: ["get", "patch", "update"], resources: ["foundryinstances/status"]
-                            # So status subresource IS enabled.
-                            # I must use the status endpoint to patch status.
-                            
-                            # Let's try custom_object_status patch
-                            # Actually the method is `patch_namespaced_custom_object_status`
-                            # Wait, does the python client have it?
-                            # Checking... CustomObjectsApi has `patch_namespaced_custom_object_status`.
-                            
-                            k8s.k8s_api.patch_namespaced_custom_object_status(
-                                group=k8s.CRD_GROUP,
-                                version=k8s.CRD_VERSION,
-                                namespace=namespace,
-                                plural=k8s.CRD_INSTANCE_PLURAL,
-                                name=name,
-                                body=status_patch
-                            )
-                            print(f"Cleared pending notification flag for {name}")
-                            
-                    except Exception as e:
-                        print(f"Failed to notify user or update status for {name}: {e}")
-                else:
-                     print(f"Password not found for {name} despite pending flag")
+            except Exception as e:
+                print(f"Error processing ExternalSecret {es.get('metadata', {}).get('name')}: {e}")
+                
     except Exception as e:
         print(f"Error in check_password_notifications: {e}")

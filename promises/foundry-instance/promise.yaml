@@ -60,8 +60,6 @@ spec:
                     type: object
                     properties:
                       name: {type: string}
-                  regeneratePassword:
-                    type: boolean
 
               status:
                 type: object
@@ -72,7 +70,6 @@ spec:
                   activeWorld: {type: string}
                   worldActive: {type: boolean}
                   lastSidecarUpdate: {type: string}
-                  passwordPendingNotification: {type: boolean}
                   error: {type: string}
                   conditions:
                     type: array
@@ -98,9 +95,9 @@ spec:
                 - apiGroups: ["foundry.platform"]
                   resources: ["foundrylicenses"]
                   verbs: ["get", "list", "watch", "patch"]
-                - apiGroups: [""]
-                  resources: ["secrets"]
-                  verbs: ["get", "create", "update", "patch"]
+                - apiGroups: ["external-secrets.io"]
+                  resources: ["externalsecrets"]
+                  verbs: ["get", "create", "update", "patch", "delete"]
 
             containers:
               - name: configure
@@ -176,5 +173,26 @@ spec:
                         promise: foundry-instance
                     EOF
                     
+                    # Create ClusterGenerator for password generation (ESO)
+                    cat > /kratix/output/cluster-generator.yaml <<EOF
+                    apiVersion: generators.external-secrets.io/v1alpha1
+                    kind: ClusterGenerator
+                    metadata:
+                      name: foundry-password
+                      labels:
+                        managed-by: kratix
+                        promise: foundry-instance
+                    spec:
+                      kind: Password
+                      generator:
+                        passwordSpec:
+                          length: 24
+                          digits: 4
+                          symbols: 0
+                          noUpper: false
+                          allowRepeat: true
+                    EOF
+                    
                     echo "Promise dependencies configured"
+
 
