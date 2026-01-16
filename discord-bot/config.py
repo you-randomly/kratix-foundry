@@ -18,6 +18,7 @@ CRD_GROUP = 'foundry.platform'
 CRD_VERSION = 'v1alpha1'
 CRD_INSTANCE_PLURAL = 'foundryinstances'
 CRD_LICENSE_PLURAL = 'foundrylicenses'
+CRD_PASSWORD_PLURAL = 'foundrypasswords'
 
 # Annotation keys
 ANNOTATION_SCHEDULED_DELETE = 'foundry.platform/scheduled-delete-at'

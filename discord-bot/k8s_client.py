@@ -13,6 +13,7 @@ from config import (
     CRD_VERSION,
     CRD_INSTANCE_PLURAL,
     CRD_LICENSE_PLURAL,
+    CRD_PASSWORD_PLURAL,
     FOUNDRY_NAMESPACE,
 )
 from cache import instances_cache, licenses_cache, licenses_list_cache, crd_schema_cache
@@ -276,6 +277,152 @@ def get_secret(name: str, namespace: str = None) -> Optional[client.V1Secret]:
             return None
         print(f'Error getting Secret {name}: {e}')
         return None
+
+
+# ============================================================================
+# FoundryPassword Functions
+# ============================================================================
+
+def get_foundry_passwords(namespace: str = None) -> List[Dict[str, Any]]:
+    """Get all FoundryPassword resources."""
+    if not k8s_api:
+        return []
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        result = k8s_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_PASSWORD_PLURAL
+        )
+        return result.get('items', [])
+    except ApiException as e:
+        print(f'Error listing FoundryPasswords: {e}')
+        return []
+
+
+def get_foundry_password(name: str, namespace: str = None) -> Optional[Dict[str, Any]]:
+    """Get a specific FoundryPassword by name."""
+    if not k8s_api:
+        return None
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        return k8s_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_PASSWORD_PLURAL,
+            name=name
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        print(f'Error getting FoundryPassword {name}: {e}')
+        return None
+
+
+def create_foundry_password(
+    name: str,
+    password_type: str,
+    namespace: Optional[str] = None,
+    instance_name: Optional[str] = None,
+    owner_id: Optional[str] = None,
+    owner_name: Optional[str] = None
+) -> Dict[str, Any]:
+    """Create a FoundryPassword resource."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    
+    password_res = {
+        'apiVersion': f'{CRD_GROUP}/{CRD_VERSION}',
+        'kind': 'FoundryPassword',
+        'metadata': {
+            'name': name,
+            'namespace': ns,
+            'annotations': {}
+        },
+        'spec': {
+            'type': password_type
+        }
+    }
+    
+    if instance_name:
+        password_res['spec']['instanceRef'] = {'name': instance_name}
+        
+    if owner_id:
+        password_res['metadata']['annotations']['foundry.platform/owner-id'] = owner_id
+    if owner_name:
+        password_res['metadata']['annotations']['foundry.platform/owner-name'] = owner_name
+        
+    if not password_res['metadata']['annotations']:
+        del password_res['metadata']['annotations']
+        
+    try:
+        result = k8s_api.create_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_PASSWORD_PLURAL,
+            body=password_res
+        )
+        return {
+            'success': True,
+            'message': f'Created FoundryPassword "{name}"',
+            'resource': result
+        }
+    except ApiException as e:
+        if e.status == 409:
+            return {'success': False, 'message': f'FoundryPassword "{name}" already exists'}
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to create FoundryPassword: {error_msg}'}
+
+
+def delete_foundry_password(name: str, namespace: str = None) -> Dict[str, Any]:
+    """Delete a FoundryPassword resource."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        k8s_api.delete_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_PASSWORD_PLURAL,
+            name=name
+        )
+        return {'success': True, 'message': f'Deleted FoundryPassword "{name}"'}
+    except ApiException as e:
+        if e.status == 404:
+            return {'success': False, 'message': f'FoundryPassword "{name}" not found'}
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to delete FoundryPassword: {error_msg}'}
+
+
+def patch_foundry_password_status(name: str, status: Dict[str, Any], namespace: str = None) -> Dict[str, Any]:
+    """Patch the status of a FoundryPassword resource."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        # Patch namespaced custom object status subresource
+        k8s_api.patch_namespaced_custom_object_status(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_PASSWORD_PLURAL,
+            name=name,
+            body={'status': status}
+        )
+        return {'success': True, 'message': f'Updated status of FoundryPassword "{name}"'}
+    except ApiException as e:
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to patch FoundryPassword status: {error_msg}'}
 
 
 # ============================================================================

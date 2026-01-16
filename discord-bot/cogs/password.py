@@ -8,6 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import k8s_client as k8s
+from config import FOUNDRY_NAMESPACE
 from embeds import format_instance_embed
 
 class PasswordCog(commands.Cog):
@@ -27,47 +28,19 @@ class PasswordCog(commands.Cog):
             await interaction.followup.send("❌ Kubernetes not connected", ephemeral=True)
             return
 
-        # Find instances created by this user and refresh their ExternalSecrets
-        instances = k8s.get_foundry_instances()
-        refreshed_count = 0
-        errors = []
+        # Find the default FoundryPassword for this user
+        password_name = f"foundry-password-user-{interaction.user.id}"
         
-        for inst in instances:
-            annotations = inst['metadata'].get('annotations', {})
-            creator_id = annotations.get('foundry.platform/created-by-id')
-            
-            if creator_id == str(interaction.user.id):
-                instance_name = inst['metadata']['name']
-                namespace = inst['metadata']['namespace']
-                
-                # Get the secret name for this instance
-                secret_ref = inst.get('spec', {}).get('adminPasswordSecretRef', {})
-                secret_name = secret_ref.get('name')
-                if not secret_name:
-                    secret_name = f"foundry-credentials-{instance_name}"
-                
-                # Refresh the ExternalSecret (which has the same name as the secret)
-                result = k8s.refresh_external_secret(secret_name, namespace)
-                if result['success']:
-                    refreshed_count += 1
-                else:
-                    errors.append(f"{instance_name}: {result['message']}")
+        # Refresh the ExternalSecret (managed by the FoundryPassword Promise)
+        result = k8s.refresh_external_secret(password_name, FOUNDRY_NAMESPACE)
         
-        if refreshed_count > 0:
-            msg = f"✅ Password reset triggered for {refreshed_count} instance(s). You will receive DM(s) with the new password(s) shortly."
-            if errors:
-                msg += f"\n\n⚠️ Some ExternalSecrets could not be refreshed:\n" + "\n".join(errors)
-            await interaction.followup.send(msg, ephemeral=True)
-        elif errors:
+        if result['success']:
             await interaction.followup.send(
-                f"❌ Failed to refresh ExternalSecrets:\n" + "\n".join(errors),
+                f"✅ Default password reset triggered. You will receive a DM with the new password shortly.", 
                 ephemeral=True
             )
         else:
-            await interaction.followup.send(
-                "ℹ️ You don't have any instances with passwords to reset. Create an instance first.",
-                ephemeral=True
-            )
+            await interaction.followup.send(f"❌ {result['message']}", ephemeral=True)
 
     @password_group.command(name="reset-instance", description="Reset the password for a specific instance")
     @app_commands.describe(name="Name of the instance to reset")
@@ -86,10 +59,16 @@ class PasswordCog(commands.Cog):
         
         namespace = instance['metadata']['namespace']
         
-        # Get the secret/ExternalSecret name for this instance
+        # Determine the password resource name
+        # If it was created as a unique password, it's foundry-password-{name}
+        # If it's using default, the user should use reset-default instead, 
+        # but let's try to find it.
+        
         secret_ref = instance.get('spec', {}).get('adminPasswordSecretRef', {})
         secret_name = secret_ref.get('name')
+        
         if not secret_name:
+            # Fallback/Legacy
             secret_name = f"foundry-credentials-{name}"
         
         # Trigger refresh via ExternalSecret annotation

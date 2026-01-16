@@ -101,12 +101,40 @@ class CreateCog(commands.Cog):
             await interaction.followup.send(embed=embed)
             return
             
-        # Determine Secret Name
-        admin_secret_name = None
+        # Determine FoundryPassword Resource Name and Secret Name
         if unique_password:
-            admin_secret_name = f"foundry-admin-{name}"
+            # Instance-specific password
+            password_resource_name = f"foundry-password-{name}"
+            admin_secret_name = f"foundry-password-{name}"
+            password_type = "instance"
         else:
-            admin_secret_name = f"foundry-admin-{interaction.user.id}-default"
+            # Shared default password for the user
+            password_resource_name = f"foundry-password-user-{interaction.user.id}"
+            admin_secret_name = f"foundry-password-user-{interaction.user.id}"
+            password_type = "default"
+        
+        # Check if FoundryPassword exists, create if not
+        password_res = k8s.get_foundry_password(password_resource_name)
+        if not password_res:
+            print(f"Creating missing FoundryPassword resource: {password_resource_name}")
+            result = k8s.create_foundry_password(
+                name=password_resource_name,
+                password_type=password_type,
+                instance_name=name if unique_password else None,
+                owner_id=str(interaction.user.id),
+                owner_name=str(interaction.user)
+            )
+            if not result['success']:
+                embed = discord.Embed(
+                    title='❌ Password Creation Failed',
+                    description=result['message'],
+                    color=discord.Color.red()
+                )
+                await interaction.followup.send(embed=embed)
+                return
+            
+            # Re-read to get current status
+            password_res = k8s.get_foundry_password(password_resource_name)
         
         # Create the instance
         result = k8s.create_foundry_instance(
@@ -135,9 +163,66 @@ class CreateCog(commands.Cog):
             else:
                 progress_embed.add_field(name='Password', value="Using default key", inline=True)
                 
-            progress_embed.set_footer(text='Waiting for Kratix pipeline to reconcile...')
+            progress_embed.set_footer(text='Waiting for password and instance reconciliation...')
             
             msg = await interaction.followup.send(embed=progress_embed)
+            
+            # Wait for FoundryPassword to be ready first (if it was just created or is pending)
+            async def wait_for_password():
+                def check_password_ready(res):
+                    status = res.get('status', {})
+                    return status.get('phase') == 'Ready'
+                
+                return await wait_for_resource_condition(
+                    get_fn=lambda: k8s.get_foundry_password(password_resource_name),
+                    check_fn=check_password_ready,
+                    timeout_seconds=60,
+                    interval_seconds=5
+                )
+            
+            ready_password_res = await wait_for_password()
+            
+            password_status_msg = ""
+            
+            # Check if this password needs notification
+            if ready_password_res:
+                pw_status = ready_password_res.get('status', {})
+                if pw_status.get('passwordPendingNotification'):
+                    import base64
+                    try:
+                        secret = k8s.get_secret(admin_secret_name)
+                        if secret and secret.data and 'adminPassword' in secret.data:
+                            pw = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+                            
+                            dm_embed = discord.Embed(
+                                title=f'🔑 Admin Password for Foundry',
+                                color=discord.Color.green()
+                            )
+                            if unique_password:
+                                dm_embed.description = f"Here is the **unique** admin password for instance **{name}**:"
+                            else:
+                                dm_embed.description = (
+                                    f"Here is your **default** admin password.\n"
+                                    "This password will be used for all future instances unless you choose otherwise."
+                                )
+                                
+                            dm_embed.add_field(name="Password", value=f"```{pw}```", inline=False)
+                            # We don't have the instance URL yet, but that's okay, typical for first creation
+                            
+                            try:
+                                await interaction.user.send(embed=dm_embed)
+                                password_status_msg = "\n🔑 **Password sent via DM!**"
+                                
+                                # Clear the notification flag on the resource to prevent double notifications
+                                k8s.patch_foundry_password_status(
+                                    password_resource_name, 
+                                    {"passwordPendingNotification": False}
+                                )
+                            except discord.Forbidden:
+                                password_status_msg = "\n⚠️ **Could not DM password. Please enable DMs.**"
+                    except Exception as e:
+                        print(f"Error fetching/sending password: {e}")
+                        password_status_msg = "\n⚠️ **Error retrieving password.**"
             
             # Wait for the instance to be ready
             def check_ready(inst):
@@ -152,42 +237,7 @@ class CreateCog(commands.Cog):
                 interval_seconds=10
             )
             
-            password_status_msg = ""
-            
             if final_inst:
-                # Check for password notification
-                status = final_inst.get('status', {})
-                if status.get('passwordPendingNotification'):
-                    import base64
-                    try:
-                        secret = k8s.get_secret(admin_secret_name)
-                        if secret and secret.data and 'adminPassword' in secret.data:
-                            pw = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
-                            
-                            dm_embed = discord.Embed(
-                                title=f'🔑 Admin Password for {name}',
-                                color=discord.Color.green()
-                            )
-                            if unique_password:
-                                dm_embed.description = f"Here is the **unique** admin password for instance **{name}**:"
-                            else:
-                                dm_embed.description = (
-                                    f"Here is your **default** admin password.\n"
-                                    "This password will be used for all future instances unless you choose otherwise."
-                                )
-                                
-                            dm_embed.add_field(name="Password", value=f"```{pw}```", inline=False)
-                            dm_embed.add_field(name="Instance URL", value=f"https://{name}.{lic.get('spec', {}).get('gateway', {}).get('baseDomain', 'k8s.orb.local')}", inline=False)
-                            
-                            try:
-                                await interaction.user.send(embed=dm_embed)
-                                password_status_msg = "\n🔑 **Password sent via DM!**"
-                            except discord.Forbidden:
-                                password_status_msg = "\n⚠️ **Could not DM password. Please enable DMs.**"
-                    except Exception as e:
-                        print(f"Error fetching/sending password: {e}")
-                        password_status_msg = "\n⚠️ **Error retrieving password.**"
-
                 embed = format_instance_embed(final_inst, is_active_override=False)
                 embed.title = f'✅ Instance Created: {name}'
                 # Get baseDomain from license
