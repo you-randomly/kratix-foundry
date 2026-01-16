@@ -73,11 +73,13 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
     # Generate ExternalSecret only if it's instance-specific
     # Shared secrets (ending with -default) should only be created once, not by every instance
     is_instance_specific = instance_name in secret_name and not secret_name.endswith("-default")
+    new_password_generated = False
     
     if is_instance_specific:
         external_secret = external_secret_template(instance_name, namespace, secret_name)
         pipeline.write_output("external-secret.yaml", external_secret)
         print(f"Generated ExternalSecret: {secret_name} (password managed by ESO)")
+        new_password_generated = True
     else:
         print(f"Using shared secret: {secret_name} (ExternalSecret not generated to avoid duplicates)")
     
@@ -126,3 +128,4 @@ def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain:
         pipeline.write_output(f"rbac-{kind}.yaml", resource)
     
     print(f"Manifests (including sidecar monitor) generated for instance: {instance_name}")
+    return new_password_generated

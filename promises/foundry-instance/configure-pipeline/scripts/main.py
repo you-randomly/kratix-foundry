@@ -44,10 +44,16 @@ def main():
         volume_info = setup_nfs_volume(pipeline, resource)
         
         # Step 3: Generate Manifests (including ExternalSecret for password)
-        generate_manifests(pipeline, resource, volume_info, base_domain)
+        new_password_generated = generate_manifests(pipeline, resource, volume_info, base_domain)
         
         # Step 4: Add Player Status (if active)
         status_updates = {}
+        
+        # If a new password was generated, flag it for Discord bot notification
+        if new_password_generated:
+            status_updates["passwordPendingNotification"] = True
+            print("New password generated - flagging for Discord notification")
+            
         if is_active:
             print("Checking player status for active instance...")
             
