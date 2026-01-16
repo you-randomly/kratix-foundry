@@ -14,3 +14,4 @@ resources:
   # Kratix Promises
   - promise-foundry-instance.yaml
   - promise-foundry-license.yaml
+  - promise-foundry-password.yaml

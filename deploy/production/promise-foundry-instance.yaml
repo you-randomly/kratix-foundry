@@ -92,46 +92,6 @@ spec:
           from foundry_lib.manifest_templates import deployment_template, service_template, pvc_template, rbac_templates
           
           
-          def external_secret_template(instance_name: str, namespace: str, secret_name: str) -> dict:
-              """
-              Generates an ExternalSecret resource that uses the ClusterGenerator to create passwords.
-              The secret won't auto-refresh (refreshInterval: 0).
-              Manual refresh is triggered by annotating with force-sync.
-              """
-              return {
-                  "apiVersion": "external-secrets.io/v1",
-                  "kind": "ExternalSecret",
-                  "metadata": {
-                      "name": secret_name,
-                      "namespace": namespace,
-                      "labels": {
-                          "foundry.platform/instance": instance_name,
-                          "managed-by": "kratix"
-                      }
-                  },
-                  "spec": {
-                      "refreshInterval": "0",
-                      "target": {
-                          "name": secret_name,
-                          "template": {
-                              "data": {
-                                  "adminPassword": "{{ .password }}"
-                              }
-                          }
-                      },
-                      "dataFrom": [
-                          {
-                              "sourceRef": {
-                                  "generatorRef": {
-                                      "apiVersion": "generators.external-secrets.io/v1alpha1",
-                                      "kind": "ClusterGenerator",
-                                      "name": "foundry-password"
-                                  }
-                              }
-                          }
-                      ]
-                  }
-              }
           
           
           def generate_manifests(pipeline, resource: dict, volume_info: dict, base_domain: str = "k8s.orb.local"):
@@ -160,18 +120,10 @@ spec:
               if not secret_name:
                   secret_name = f"foundry-credentials-{instance_name}"
               
-              # Generate ExternalSecret only if it's instance-specific
-              # Shared secrets (ending with -default) should only be created once, not by every instance
-              is_instance_specific = instance_name in secret_name and not secret_name.endswith("-default")
+              # Password is now managed by FoundryPassword Promise
+              # The secret name is passed in via adminPasswordSecretRef or generated
+              print(f"Using password secret: {secret_name}")
               new_password_generated = False
-              
-              if is_instance_specific:
-                  external_secret = external_secret_template(instance_name, namespace, secret_name)
-                  pipeline.write_output("external-secret.yaml", external_secret)
-                  print(f"Generated ExternalSecret: {secret_name} (password managed by ESO)")
-                  new_password_generated = True
-              else:
-                  print(f"Using shared secret: {secret_name} (ExternalSecret not generated to avoid duplicates)")
               
               storage_backend = volume_info.get("storageBackend", "nfs")
               
@@ -381,26 +333,6 @@ spec:
                       labels:
                         managed-by: kratix
                         promise: foundry-instance
-                    EOF
-                    
-                    # Create ClusterGenerator for password generation (ESO)
-                    cat > /kratix/output/cluster-generator.yaml <<EOF
-                    apiVersion: generators.external-secrets.io/v1alpha1
-                    kind: ClusterGenerator
-                    metadata:
-                      name: foundry-password
-                      labels:
-                        managed-by: kratix
-                        promise: foundry-instance
-                    spec:
-                      kind: Password
-                      generator:
-                        passwordSpec:
-                          length: 24
-                          digits: 4
-                          symbols: 0
-                          noUpper: false
-                          allowRepeat: true
                     EOF
                     
                     echo "Promise dependencies configured"

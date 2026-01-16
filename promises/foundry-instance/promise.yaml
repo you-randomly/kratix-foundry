@@ -173,26 +173,6 @@ spec:
                         promise: foundry-instance
                     EOF
                     
-                    # Create ClusterGenerator for password generation (ESO)
-                    cat > /kratix/output/cluster-generator.yaml <<EOF
-                    apiVersion: generators.external-secrets.io/v1alpha1
-                    kind: ClusterGenerator
-                    metadata:
-                      name: foundry-password
-                      labels:
-                        managed-by: kratix
-                        promise: foundry-instance
-                    spec:
-                      kind: Password
-                      generator:
-                        passwordSpec:
-                          length: 24
-                          digits: 4
-                          symbols: 0
-                          noUpper: false
-                          allowRepeat: true
-                    EOF
-                    
                     echo "Promise dependencies configured"
 
 
