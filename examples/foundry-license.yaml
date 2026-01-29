@@ -5,7 +5,7 @@ metadata:
   namespace: foundry-vtt
 spec:
   licenseSecretRef:
-    name: foundry-license-secret
+    name: foundry-license
     key: license-key
   activeInstanceName: standby-instance
   switchMode: force
@@ -13,7 +13,7 @@ spec:
     parentRef:
       name: default-gateway
       namespace: foundry-vtt
-    dnsTarget: "192.168.139.2"
-    publicIP: "1.2.3.4"
+    dnsTarget: "212.69.47.125"
+    publicIP: "212.69.47.125"
     baseDomain: "lab.jake-watson.co.uk"
   owner: test@example.com

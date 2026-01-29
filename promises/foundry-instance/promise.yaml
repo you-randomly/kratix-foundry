@@ -147,32 +147,6 @@ spec:
                   secretName: foundry-credentials
 
     promise:
-      configure:
-        - apiVersion: platform.kratix.io/v1alpha1
-          kind: Pipeline
-          metadata:
-            name: promise-configure
-          spec:
-            containers:
-              - name: setup-dependencies
-                image: ghcr.io/syntasso/kratix-pipeline-utility:v0.0.1
-                command:
-                  - sh
-                  - -c
-                  - |
-                    set -ex
-                    
-                    # Create the foundry-vtt namespace
-                    cat > /kratix/output/namespace.yaml <<EOF
-                    apiVersion: v1
-                    kind: Namespace
-                    metadata:
-                      name: foundry-vtt
-                      labels:
-                        managed-by: kratix
-                        promise: foundry-instance
-                    EOF
-                    
-                    echo "Promise dependencies configured"
+      configure: []
 
 

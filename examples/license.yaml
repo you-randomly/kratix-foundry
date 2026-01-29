@@ -4,12 +4,21 @@ apiVersion: foundry.platform/v1alpha1
 kind: FoundryLicense
 metadata:
   name: primary-license
+  namespace: foundry-vtt
 spec:
   # Reference to a Secret containing the license key
   # The Secret should be created via External Secrets or manually
   licenseSecretRef:
-    name: foundry-license-secrets
+    name: foundry-license
     key: license-key
   
+  gateway:
+    parentRef:
+      name: cilium-gateway-external
+      namespace: default
+    dnsTarget: "212.69.47.125"
+    publicIP: "212.69.47.125"
+    baseDomain: "lab.jake-watson.co.uk"
+
   # Optional: identify the license owner
   owner: "gamemaster@example.com"
