@@ -99,10 +99,10 @@ async def check_password_notifications(bot):
         return
         
     try:
-        # Get all ExternalSecrets with foundry.platform/instance label
+        # Get all ExternalSecrets managed by Kratix
         es_list = k8s.list_external_secrets(
             namespace=k8s.FOUNDRY_NAMESPACE,
-            label_selector="foundry.platform/instance"
+            label_selector="managed-by=kratix"
         )
         
         for es in es_list:
@@ -113,8 +113,14 @@ async def check_password_notifications(bot):
                 
                 es_name = es['metadata']['name']
                 namespace = es['metadata']['namespace']
-                annotations = es.get('metadata', {}).get('annotations', {})
+                metadata = es.get('metadata', {})
+                labels = metadata.get('labels', {})
+                annotations = metadata.get('annotations', {})
                 
+                # Check if this is a FoundryPassword managed secret
+                if 'foundry.platform/password' not in labels:
+                    continue
+
                 # Get the refresh time from ESO status
                 refresh_time = k8s.get_external_secret_refresh_time(es)
                 if not refresh_time:
@@ -125,20 +131,20 @@ async def check_password_notifications(bot):
                 if last_notified and last_notified >= refresh_time:
                     continue
                 
-                # Get instance name from label
-                instance_name = es['metadata'].get('labels', {}).get('foundry.platform/instance')
-                if not instance_name:
-                    continue
+                # Identification
+                password_type = labels.get('foundry.platform/password-type', 'default')
+                instance_name = labels.get('foundry.platform/instance')
+                creator_id = labels.get('foundry.platform/owner-id')
                 
-                # Get the instance to find creator
-                instance = k8s.get_foundry_instance(instance_name, namespace)
-                if not instance:
-                    print(f"Instance {instance_name} not found for ExternalSecret {es_name}")
-                    continue
-                
-                creator_id = instance['metadata'].get('annotations', {}).get('foundry.platform/created-by-id')
                 if not creator_id:
-                    print(f"No creator ID for instance {instance_name}, skipping notification")
+                    # Fallback for older resources: if instance_name is present, get it from instance
+                    if instance_name:
+                        instance = k8s.get_foundry_instance(instance_name, namespace)
+                        if instance:
+                            creator_id = instance['metadata'].get('annotations', {}).get('foundry.platform/created-by-id')
+                
+                if not creator_id:
+                    print(f"Could not find creator ID for ExternalSecret {es_name}, skipping notification")
                     continue
                 
                 # Get password from the secret created by ESO
@@ -157,26 +163,44 @@ async def check_password_notifications(bot):
                 try:
                     user = await bot.fetch_user(int(creator_id))
                     if user:
-                        # Get license for domain info
-                        license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
-                        base_domain = "k8s.orb.local"
-                        if license_name:
-                            lic = k8s.get_foundry_license(license_name, namespace)
-                            if lic:
-                                base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', base_domain)
+                        # Prepare embed
+                        if password_type == 'instance' and instance_name:
+                            title = '🔑 Admin Password for Foundry Instance'
+                            description = f"The admin password for instance **{instance_name}** has been generated/reset."
+                            color = discord.Color.green()
+                        else:
+                            title = '🔑 Default Admin Password Reset'
+                            description = "Your **default** admin password has been generated/reset. This will be used for future instances."
+                            color = discord.Color.blue()
+                            
+                        embed = discord.Embed(title=title, description=description, color=color)
                         
-                        embed = discord.Embed(
-                            title='🔑 Admin Password for Foundry Instance',
-                            description=f"The admin password for instance **{instance_name}** has been generated/reset.",
-                            color=discord.Color.green()
-                        )
-                        embed.add_field(name="Instance", value=instance_name, inline=True)
+                        if instance_name:
+                            embed.add_field(name="Instance", value=instance_name, inline=True)
+                        
                         embed.add_field(name="Password", value=f"```{password}```", inline=False)
-                        embed.add_field(name="URL", value=f"https://{instance_name}.{base_domain}", inline=False)
-                        embed.set_footer(text="Keep this password safe! You can reset it anytime with /vtt-password reset-instance")
+                        
+                        # Try to get URL if it's an instance password
+                        if instance_name:
+                            instance = k8s.get_foundry_instance(instance_name, namespace)
+                            if instance:
+                                license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
+                                base_domain = "k8s.orb.local"
+                                if license_name:
+                                    lic = k8s.get_foundry_license(license_name, namespace)
+                                    if lic:
+                                        base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', base_domain)
+                                embed.add_field(name="URL", value=f"https://{instance_name}.{base_domain}", inline=False)
+
+                        footer = "Keep this password safe! "
+                        if password_type == 'instance':
+                            footer += "You can reset it anytime with /vtt-password reset-instance"
+                        else:
+                            footer += "You can reset it anytime with /vtt-password reset-default"
+                        embed.set_footer(text=footer)
                         
                         await user.send(embed=embed)
-                        print(f"Sent password DM to user {creator_id} for instance {instance_name}")
+                        print(f"Sent {password_type} password DM to user {creator_id} for {instance_name or 'default'}")
                         
                         # Mark as notified by annotating the ExternalSecret
                         k8s.annotate_external_secret(

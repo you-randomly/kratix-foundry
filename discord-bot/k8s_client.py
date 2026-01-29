@@ -355,6 +355,9 @@ def create_foundry_password(
         
     if owner_id:
         password_res['metadata']['annotations']['foundry.platform/owner-id'] = owner_id
+        if 'labels' not in password_res['metadata']:
+            password_res['metadata']['labels'] = {}
+        password_res['metadata']['labels']['foundry.platform/owner-id'] = owner_id
     if owner_name:
         password_res['metadata']['annotations']['foundry.platform/owner-name'] = owner_name
         

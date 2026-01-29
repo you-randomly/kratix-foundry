@@ -189,11 +189,24 @@ class CreateCog(commands.Cog):
                 pw_status = ready_password_res.get('status', {})
                 if pw_status.get('passwordPendingNotification'):
                     import base64
-                    try:
-                        secret = k8s.get_secret(admin_secret_name)
-                        if secret and secret.data and 'adminPassword' in secret.data:
-                            pw = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
-                            
+                    import asyncio
+                    
+                    # ESO might still be syncing the secret, so we try a few times
+                    pw = None
+                    for attempt in range(5):
+                        try:
+                            secret = k8s.get_secret(admin_secret_name)
+                            if secret and secret.data and 'adminPassword' in secret.data:
+                                pw = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
+                                break
+                        except Exception as e:
+                            print(f"Attempt {attempt+1} to get secret failed: {e}")
+                        
+                        if attempt < 4:
+                            await asyncio.sleep(5)
+                    
+                    if pw:
+                        try:
                             dm_embed = discord.Embed(
                                 title=f'🔑 Admin Password for Foundry',
                                 color=discord.Color.green()
@@ -220,9 +233,12 @@ class CreateCog(commands.Cog):
                                 )
                             except discord.Forbidden:
                                 password_status_msg = "\n⚠️ **Could not DM password. Please enable DMs.**"
-                    except Exception as e:
-                        print(f"Error fetching/sending password: {e}")
-                        password_status_msg = "\n⚠️ **Error retrieving password.**"
+                        except Exception as e:
+                            print(f"Error sending password DM: {e}")
+                            password_status_msg = "\n⚠️ **Error sending password DM.**"
+                    else:
+                        print(f"Timed out waiting for secret {admin_secret_name}")
+                        password_status_msg = "\n⚠️ **Password still generating. Check your DMs shortly.**"
             
             # Wait for the instance to be ready
             def check_ready(inst):

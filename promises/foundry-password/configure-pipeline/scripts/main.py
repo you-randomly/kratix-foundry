@@ -14,22 +14,26 @@ sys.path.append("/app")
 from foundry_lib.kratix_helpers import Pipeline
 
 
-def external_secret_template(password_name: str, namespace: str, secret_name: str) -> dict:
+def external_secret_template(password_name: str, namespace: str, secret_name: str, labels: dict = None) -> dict:
     """
     Generates an ExternalSecret resource that uses the ClusterGenerator to create passwords.
     The secret won't auto-refresh (refreshInterval: 0).
     Manual refresh is triggered by annotating with force-sync.
     """
+    template_labels = {
+        "foundry.platform/password": password_name,
+        "managed-by": "kratix"
+    }
+    if labels:
+        template_labels.update(labels)
+
     return {
         "apiVersion": "external-secrets.io/v1",
         "kind": "ExternalSecret",
         "metadata": {
             "name": secret_name,
             "namespace": namespace,
-            "labels": {
-                "foundry.platform/password": password_name,
-                "managed-by": "kratix"
-            }
+            "labels": template_labels
         },
         "spec": {
             "refreshInterval": "0",  # No automatic refresh
@@ -63,12 +67,30 @@ def main():
         
         password_name = resource["metadata"]["name"]
         namespace = resource["metadata"]["namespace"]
+        metadata = resource.get("metadata", {})
         spec = resource.get("spec", {})
         
         password_type = spec.get("type", "default")
         instance_ref = spec.get("instanceRef", {})
         instance_name = instance_ref.get("name", "")
         
+        # Propagate labels from the FoundryPassword resource
+        # These help the Discord bot background task identify the owner and type
+        labels = {
+            "foundry.platform/password-type": password_type
+        }
+        if instance_name:
+            labels["foundry.platform/instance"] = instance_name
+        
+        # Capture owner info if present
+        owner_id = metadata.get("labels", {}).get("foundry.platform/owner-id")
+        if not owner_id:
+            # Fallback to annotation
+            owner_id = metadata.get("annotations", {}).get("foundry.platform/owner-id")
+        
+        if owner_id:
+            labels["foundry.platform/owner-id"] = owner_id
+
         # Determine secret name: use the resource name directly
         # It's already prefixed by the bot (e.g., foundry-password-user-123 or foundry-password-my-inst)
         secret_name = password_name
@@ -80,9 +102,9 @@ def main():
             print(f"  Instance: {instance_name}")
         
         # Generate ExternalSecret
-        external_secret = external_secret_template(password_name, namespace, secret_name)
+        external_secret = external_secret_template(password_name, namespace, secret_name, labels)
         pipeline.write_output("external-secret.yaml", external_secret)
-        print(f"Generated ExternalSecret: {secret_name}")
+        print(f"Generated ExternalSecret: {secret_name} with labels: {labels}")
         
         # Update status
         now = datetime.now(timezone.utc).isoformat()
