@@ -116,6 +116,8 @@ def deployment_template(name, namespace, version, cpu, memory, hostname, proxy_s
                                 {"name": "UV_THREADPOOL_SIZE", "value": "6"},
                                 {"name": "CONTAINER_CACHE", "value": "/data/container_cache"},
                                 {"name": "TIMEZONE", "value": "UTC"},
+                                {"name": "FOUNDRY_COMPRESS_WEBSOCKET", "value": "true"},
+                                {"name": "FOUNDRY_MINIFY_STATIC_FILES", "value": "true"},
                                 {"name": "FOUNDRY_HOSTNAME", "value": hostname},
                                 {"name": "FOUNDRY_LOCAL_HOSTNAME", "value": hostname},
                                 {"name": "FOUNDRY_PROXY_SSL", "value": str(proxy_ssl).lower()},
