@@ -1,5 +1,8 @@
 def httproute_template(name, namespace, hostname, gateway_name, gateway_ns, backend_service, backend_ns=None):
     rule = {
+        "timeouts": {
+            "backendRequest": "0s"
+        },
         "backendRefs": [
             {
                 "name": backend_service,
