@@ -108,13 +108,12 @@ def generate_routes(pipeline, resource: dict, admin_key: Optional[str] = None) -
         
         state = "standby"
         backend_service = "foundry-standby-page"
-        backend_ns = "foundry-vtt"
+        backend_ns = None  # Same namespace as the route — no explicit namespace to avoid cross-ns ReferenceGrant requirement
         
         if name == active_instance_name:
             print(f"  Instance '{name}' is ACTIVE")
             state = "active"
             backend_service = f"foundry-{name}"
-            backend_ns = None # Same namespace as the route
         else:
             print(f"  Instance '{name}' is STANDBY")
 
