@@ -1,0 +1,140 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: foundry-workload.foundry.kro.run
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: FoundryWorkload
+    group: foundry.kro.run
+    plural: foundryworkloads
+    spec:
+      name: string
+      namespace: string | default=foundry-vtt
+      foundryVersion: string | default=13.347.0
+      cpu: string | default=100m
+      memory: string | default=256Mi
+      storageSize: string | default=10Gi
+      credentialsSecretName: string | default=foundry-credentials
+      licenseSecretName: string | default=foundry-license
+    status:
+      availableReplicas: ${deployment.status.availableReplicas}
+  resources:
+    - id: data
+      template:
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: foundry-${schema.spec.name}-data
+          namespace: ${schema.spec.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.spec.name}
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: ${schema.spec.storageSize}
+    - id: deployment
+      readyWhen:
+        - ${deployment.status.availableReplicas == deployment.spec.replicas}
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: foundry-${schema.spec.name}
+          namespace: ${schema.spec.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.spec.name}
+        spec:
+          replicas: 1
+          strategy:
+            type: Recreate
+          selector:
+            matchLabels:
+              app: foundry-vtt
+              instance: ${schema.spec.name}
+          template:
+            metadata:
+              labels:
+                app: foundry-vtt
+                instance: ${schema.spec.name}
+            spec:
+              initContainers:
+                - name: volume-permissions
+                  image: busybox:1.36
+                  command:
+                    - sh
+                    - -c
+                    - chown -R 1000:1000 /data
+                  volumeMounts:
+                    - name: data
+                      mountPath: /data
+              containers:
+                - name: foundry-vtt
+                  image: felddy/foundryvtt:${schema.spec.foundryVersion}
+                  ports:
+                    - containerPort: 30000
+                  resources:
+                    requests:
+                      cpu: ${schema.spec.cpu}
+                      memory: ${schema.spec.memory}
+                  env:
+                    - name: UV_THREADPOOL_SIZE
+                      value: "6"
+                    - name: CONTAINER_CACHE
+                      value: /data/container_cache
+                    - name: TIMEZONE
+                      value: UTC
+                    - name: FOUNDRY_COMPRESS_WEBSOCKET
+                      value: "true"
+                    - name: FOUNDRY_MINIFY_STATIC_FILES
+                      value: "true"
+                    - name: FOUNDRY_USERNAME
+                      valueFrom:
+                        secretKeyRef:
+                          name: ${schema.spec.credentialsSecretName}
+                          key: username
+                    - name: FOUNDRY_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                          name: ${schema.spec.credentialsSecretName}
+                          key: password
+                    - name: FOUNDRY_ADMIN_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: ${schema.spec.credentialsSecretName}
+                          key: adminPassword
+                    - name: FOUNDRY_LICENSE_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: ${schema.spec.licenseSecretName}
+                          key: license-key
+                  volumeMounts:
+                    - name: data
+                      mountPath: /data
+              volumes:
+                - name: data
+                  persistentVolumeClaim:
+                    claimName: ${data.metadata.name}
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: foundry-${schema.spec.name}
+          namespace: ${schema.spec.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.spec.name}
+        spec:
+          selector:
+            app: foundry-vtt
+            instance: ${schema.spec.name}
+          ports:
+            - protocol: TCP
+              port: 80
+              targetPort: 30000
+          type: ClusterIP

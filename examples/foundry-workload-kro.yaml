@@ -1,0 +1,10 @@
+apiVersion: foundry.kro.run/v1alpha1
+kind: FoundryWorkload
+metadata:
+  name: kro-pilot
+  namespace: foundry-vtt
+spec:
+  name: kro-pilot
+  foundryVersion: "13.347.0"
+  credentialsSecretName: foundry-credentials
+  licenseSecretName: foundry-license
