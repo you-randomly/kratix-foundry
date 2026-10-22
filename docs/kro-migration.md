@@ -47,6 +47,34 @@ license-routing workflow and does not create identity routes or DNS records.
   Removing it requires migrating these behaviors and planning a CRD/data
   handoff, not just replacing Promise YAML.
 
+## Candidate: MetaController for license routing
+
+MetaController is a better fit than a Kro resource graph for the license's
+cross-resource routing workflow. The `FoundryLicense` would remain the desired
+control record (including its license Secret reference and requested active
+instance), while a MetaController sync hook would calculate and reconcile the
+per-instance `HTTPRoute` and optional `DNSEndpoint` resources.
+
+The controller must reconcile when either the license changes or a related
+`FoundryInstance` is created, updated, or deleted. Since instances currently
+refer to a license through `spec.licenseRef` rather than an ownership
+relationship, the implementation needs a reliable way to find the related
+instances, such as adding a license label or watching instances and filtering
+by their spec reference.
+
+The sync behavior should be idempotent: derive the desired routes from the
+license and current instance set, and report the effective active instance and
+switch warnings in status. For `switchMode: block`, it must retain the current
+active route if the player count cannot be checked or players are connected.
+Requests to Foundry should be bounded and treated as read-only checks; sync
+retries must not accidentally accept a rejected activation. Scheduled-for-
+deletion instances must remain ineligible for activation.
+
+This is a migration design, not a deployed MetaController implementation. Do
+not run it alongside the Kratix license pipeline as a second owner of the same
+routes or DNS records. A cutover should first verify the controller's event
+coverage and behavior, then transfer ownership of those outputs from Kratix.
+
 The pilot intentionally leaves all current Kratix installation and production
 manifests unchanged. A complete cutover should preserve the existing
 `foundry.platform` API contract and migrate license orchestration before
