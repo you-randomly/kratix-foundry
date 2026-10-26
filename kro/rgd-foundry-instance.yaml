@@ -2,9 +2,12 @@ apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
   name: foundry-instance
+  annotations:
+    kro.run/allow-breaking-changes: "true"
 spec:
   schema:
-    apiVersion: foundry.platform/v1alpha1
+    group: foundry.platform
+    apiVersion: v1alpha1
     kind: FoundryInstance
     spec:
       licenseRef:
@@ -24,14 +27,9 @@ spec:
       monitorImage: string | default="ghcr.io/you-randomly/kratix-foundry/instance-pipeline:latest"
     status:
       phase: '${deployment.status.availableReplicas > 0 ? "Ready" : "Pending"}'
-      isActive: ${licenseLease.spec.holderIdentity == schema.metadata.name}
-      leaseHolder: ${licenseLease.spec.holderIdentity}
+      isActive: '${has(licenseLease.spec.holderIdentity) && licenseLease.spec.holderIdentity == schema.metadata.name}'
+      leaseHolder: '${has(licenseLease.spec.holderIdentity) ? licenseLease.spec.holderIdentity : ""}'
       requestedHolder: ${license.spec.activeInstanceName}
-      connectedPlayers: integer
-      activeWorld: string
-      worldActive: boolean
-      lastSidecarUpdate: string
-      error: string
   resources:
     # 1. External reference to parent FoundryLicense (for gateway, domain, and license secret config)
     - id: license
@@ -293,7 +291,7 @@ spec:
             - timeouts:
                 backendRequest: 0s
               backendRefs:
-                - name: '${licenseLease.spec.holderIdentity == schema.metadata.name ? "foundry-" + schema.metadata.name : "foundry-standby-page"}'
+                - name: '${has(licenseLease.spec.holderIdentity) && licenseLease.spec.holderIdentity == schema.metadata.name ? "foundry-" + schema.metadata.name : "foundry-standby-page"}'
                   port: 80
 
     # 8. Optional DNSEndpoint when license specifies a publicIP

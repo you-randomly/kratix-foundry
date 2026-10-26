@@ -2,9 +2,12 @@ apiVersion: kro.run/v1alpha1
 kind: ResourceGraphDefinition
 metadata:
   name: foundry-license
+  annotations:
+    kro.run/allow-breaking-changes: "true"
 spec:
   schema:
-    apiVersion: foundry.platform/v1alpha1
+    group: foundry.platform
+    apiVersion: v1alpha1
     kind: FoundryLicense
     spec:
       licenseSecretRef:
@@ -22,11 +25,9 @@ spec:
         baseDomain: string | default="k8s.orb.local" description="Base domain for instance hostnames"
       owner: string | default="" description="Email or identifier of the license owner"
     status:
-      activeInstance: ${lease.spec.holderIdentity}
+      activeInstance: '${has(lease.spec.holderIdentity) ? lease.spec.holderIdentity : ""}'
       requestedInstance: ${schema.spec.activeInstanceName}
       leaseDurationSeconds: ${lease.spec.leaseDurationSeconds}
-      renewTime: ${lease.spec.renewTime}
-      acquireTime: ${lease.spec.acquireTime}
       blockedReason: '${has(lease.metadata.annotations) && "foundry.platform/switch-blocked-reason" in lease.metadata.annotations ? lease.metadata.annotations["foundry.platform/switch-blocked-reason"] : ""}'
   resources:
     - id: lease
