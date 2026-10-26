@@ -1,0 +1,319 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: foundry-instance
+spec:
+  schema:
+    apiVersion: foundry.platform/v1alpha1
+    kind: FoundryInstance
+    spec:
+      licenseRef:
+        name: string | required=true description="Name of the FoundryLicense to lease"
+      foundryVersion: string | default="13.347.0" description="Foundry VTT container image tag"
+      resources:
+        cpu: string | default="100m"
+        memory: string | default="256Mi"
+      storageBackend: string | default="nfs" description="Storage backend (nfs or pvc)"
+      pvcStorageSize: string | default="10Gi" description="PVC size when storageBackend is pvc"
+      nfsServer: string | default="192.168.200.184" description="NFS server host when storageBackend is nfs"
+      nfsBasePath: string | default="" description="Custom NFS path (defaults to /volume1/foundry/instances/<name>)"
+      proxySSL: boolean | default=true
+      proxyPort: integer | default=443
+      adminPasswordSecretRef:
+        name: string | default="" description="Secret containing adminPassword key"
+      monitorImage: string | default="ghcr.io/you-randomly/kratix-foundry/instance-pipeline:latest"
+    status:
+      phase: '${deployment.status.availableReplicas > 0 ? "Ready" : "Pending"}'
+      isActive: ${licenseLease.spec.holderIdentity == schema.metadata.name}
+      leaseHolder: ${licenseLease.spec.holderIdentity}
+      requestedHolder: ${license.spec.activeInstanceName}
+      connectedPlayers: integer
+      activeWorld: string
+      worldActive: boolean
+      lastSidecarUpdate: string
+      error: string
+  resources:
+    # 1. External reference to parent FoundryLicense (for gateway, domain, and license secret config)
+    - id: license
+      externalRef:
+        apiVersion: foundry.platform/v1alpha1
+        kind: FoundryLicense
+        metadata:
+          name: ${schema.spec.licenseRef.name}
+          namespace: ${schema.metadata.namespace}
+
+    # 2. External reference to License Lease (for reactive routing based on holderIdentity)
+    - id: licenseLease
+      externalRef:
+        apiVersion: coordination.k8s.io/v1
+        kind: Lease
+        metadata:
+          name: ${schema.spec.licenseRef.name}
+          namespace: ${schema.metadata.namespace}
+
+    # 3. Optional PVC when storageBackend == "pvc"
+    - id: pvc
+      includeWhen:
+        - ${schema.spec.storageBackend == "pvc"}
+      template:
+        apiVersion: v1
+        kind: PersistentVolumeClaim
+        metadata:
+          name: foundry-${schema.metadata.name}-data
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: ${schema.spec.pvcStorageSize}
+
+    # 4. RBAC for Sidecar Monitor + Lease Coordinator
+    - id: serviceAccount
+      template:
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: foundry-${schema.metadata.name}-monitor
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+
+    - id: role
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: Role
+        metadata:
+          name: foundry-${schema.metadata.name}-monitor
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+        rules:
+          - apiGroups: ["foundry.platform"]
+            resources: ["foundryinstances", "foundryinstances/status"]
+            verbs: ["get", "patch", "update"]
+          - apiGroups: ["foundry.platform"]
+            resources: ["foundrylicenses", "foundrylicenses/status"]
+            verbs: ["get", "patch", "update"]
+          - apiGroups: ["coordination.k8s.io"]
+            resources: ["leases"]
+            resourceNames: ["${schema.spec.licenseRef.name}"]
+            verbs: ["get", "patch", "update"]
+
+    - id: roleBinding
+      template:
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: foundry-${schema.metadata.name}-monitor
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+        subjects:
+          - kind: ServiceAccount
+            name: ${serviceAccount.metadata.name}
+            namespace: ${schema.metadata.namespace}
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: Role
+          name: ${role.metadata.name}
+
+    # 5. Foundry VTT Deployment with Lease-Managing Sidecar
+    - id: deployment
+      template:
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: foundry-${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+        spec:
+          replicas: 1
+          strategy:
+            type: Recreate
+          selector:
+            matchLabels:
+              app: foundry-vtt
+              instance: ${schema.metadata.name}
+          template:
+            metadata:
+              labels:
+                app: foundry-vtt
+                instance: ${schema.metadata.name}
+            spec:
+              serviceAccountName: ${serviceAccount.metadata.name}
+              initContainers:
+                - name: volume-init
+                  image: busybox:1.36
+                  command:
+                    - sh
+                    - -c
+                    - |
+                      mkdir -p /data/Data/modules /data/Data/worlds
+                      if [ "${schema.spec.storageBackend}" = "pvc" ]; then
+                        chown -R 1000:1000 /data
+                      fi
+                  volumeMounts:
+                    - name: data
+                      mountPath: /data
+              containers:
+                - name: foundry-vtt
+                  image: felddy/foundryvtt:${schema.spec.foundryVersion}
+                  ports:
+                    - containerPort: 30000
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    runAsNonRoot: false
+                    seccompProfile:
+                      type: RuntimeDefault
+                  resources:
+                    requests:
+                      cpu: ${schema.spec.resources.cpu}
+                      memory: ${schema.spec.resources.memory}
+                  env:
+                    - name: UV_THREADPOOL_SIZE
+                      value: "6"
+                    - name: CONTAINER_CACHE
+                      value: "/data/container_cache"
+                    - name: TIMEZONE
+                      value: "UTC"
+                    - name: FOUNDRY_COMPRESS_WEBSOCKET
+                      value: "true"
+                    - name: FOUNDRY_MINIFY_STATIC_FILES
+                      value: "true"
+                    - name: FOUNDRY_HOSTNAME
+                      value: ${schema.metadata.name}.${license.spec.gateway.baseDomain}
+                    - name: FOUNDRY_LOCAL_HOSTNAME
+                      value: ${schema.metadata.name}.${license.spec.gateway.baseDomain}
+                    - name: FOUNDRY_PROXY_SSL
+                      value: '${schema.spec.proxySSL ? "true" : "false"}'
+                    - name: FOUNDRY_PROXY_PORT
+                      value: ${string(schema.spec.proxyPort)}
+                    - name: FOUNDRY_USERNAME
+                      valueFrom:
+                        secretKeyRef:
+                          name: foundry-credentials
+                          key: username
+                    - name: FOUNDRY_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                          name: foundry-credentials
+                          key: password
+                    - name: FOUNDRY_ADMIN_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-credentials-" + schema.metadata.name}'
+                          key: adminPassword
+                    - name: FOUNDRY_LICENSE_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: ${license.spec.licenseSecretRef.name}
+                          key: ${license.spec.licenseSecretRef.key}
+                  volumeMounts:
+                    - name: data
+                      mountPath: /data
+                - name: monitor
+                  image: ${schema.spec.monitorImage}
+                  command: ["python3", "-m", "foundry_lib.sidecar_monitor"]
+                  env:
+                    - name: INSTANCE_NAME
+                      value: ${schema.metadata.name}
+                    - name: LICENSE_NAME
+                      value: ${schema.spec.licenseRef.name}
+                    - name: POD_NAMESPACE
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: metadata.namespace
+                    - name: ADMIN_KEY_PATH
+                      value: /etc/foundry/credentials/adminPassword
+                    - name: PYTHONPATH
+                      value: /app
+                    - name: PYTHONUNBUFFERED
+                      value: "1"
+                  volumeMounts:
+                    - name: credentials
+                      mountPath: /etc/foundry/credentials
+                      readOnly: true
+              volumes:
+                - name: data
+                  persistentVolumeClaim: '${schema.spec.storageBackend == "pvc" ? {"claimName": "foundry-" + schema.metadata.name + "-data"} : omit()}'
+                  nfs: '${schema.spec.storageBackend == "nfs" ? {"server": schema.spec.nfsServer, "path": (schema.spec.nfsBasePath != "" ? schema.spec.nfsBasePath : "/volume1/foundry/instances/" + schema.metadata.name)} : omit()}'
+                - name: credentials
+                  secret:
+                    secretName: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-credentials-" + schema.metadata.name}'
+
+    # 6. ClusterIP Service for Foundry VTT
+    - id: service
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: foundry-${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+        spec:
+          selector:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+          ports:
+            - protocol: TCP
+              port: 80
+              targetPort: 30000
+          type: ClusterIP
+
+    # 7. HTTPRoute reactive to Lease holderIdentity
+    - id: httpRoute
+      template:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        metadata:
+          name: foundry-id-${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+            license: ${schema.spec.licenseRef.name}
+        spec:
+          hostnames:
+            - ${schema.metadata.name}.${license.spec.gateway.baseDomain}
+          parentRefs:
+            - name: ${license.spec.gateway.parentRef.name}
+              namespace: ${license.spec.gateway.parentRef.namespace}
+          rules:
+            - timeouts:
+                backendRequest: 0s
+              backendRefs:
+                - name: '${licenseLease.spec.holderIdentity == schema.metadata.name ? "foundry-" + schema.metadata.name : "foundry-standby-page"}'
+                  port: 80
+
+    # 8. Optional DNSEndpoint when license specifies a publicIP
+    - id: dnsEndpoint
+      includeWhen:
+        - ${license.spec.gateway.publicIP != ""}
+      template:
+        apiVersion: externaldns.k8s.io/v1alpha1
+        kind: DNSEndpoint
+        metadata:
+          name: foundry-id-${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app: foundry-vtt
+            instance: ${schema.metadata.name}
+            license: ${schema.spec.licenseRef.name}
+        spec:
+          endpoints:
+            - dnsName: ${schema.metadata.name}.${license.spec.gateway.baseDomain}
+              recordTTL: 300
+              recordType: A
+              targets:
+                - ${license.spec.gateway.publicIP}

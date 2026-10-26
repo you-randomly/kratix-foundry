@@ -95,12 +95,12 @@ class UpdateCog(commands.Cog):
             
             msg = await interaction.followup.send(embed=switch_embed)
             
-            # Poll for the license status to update
+            # Poll for the license status to update (use_cache=False so we see Lease transitions immediately)
             def check_active(lic):
                 return lic.get('status', {}).get('activeInstance') == instance
 
             final_lic = await wait_for_resource_condition(
-                get_fn=lambda: k8s.get_foundry_license(license_name),
+                get_fn=lambda: k8s.get_foundry_license(license_name, use_cache=False),
                 check_fn=check_active,
                 timeout_seconds=60,
                 interval_seconds=5
@@ -120,16 +120,32 @@ class UpdateCog(commands.Cog):
                 else:
                     await msg.edit(content=f"✅ Switch complete! Instance **{instance}** is now active.")
             else:
-                # Timeout
-                timeout_embed = discord.Embed(
-                    title='⚠️ Switch Taking Longer Than Expected',
-                    description=(
-                        f"The request to activate **{instance}** was sent, but the routing hasn't updated yet. "
-                        "It should be ready shortly. Check `/vtt-status` in a moment."
-                    ),
-                    color=discord.Color.orange()
-                )
-                await msg.edit(embed=timeout_embed)
+                # Check if the switch is queued waiting on active players (block mode)
+                latest_lic = k8s.get_foundry_license(license_name, use_cache=False) or {}
+                blocked_reason = latest_lic.get('status', {}).get('blockedReason')
+                current_holder = latest_lic.get('status', {}).get('activeInstance')
+                if blocked_reason:
+                    queued_embed = discord.Embed(
+                        title='⏳ Switch Queued (Players Connected)',
+                        description=(
+                            f"**{instance}** is queued to acquire license **{license_name}** as soon as "
+                            f"**{current_holder}** has 0 connected players.\n\n"
+                            f"**Reason:** {blocked_reason}"
+                        ),
+                        color=discord.Color.gold()
+                    )
+                    await msg.edit(embed=queued_embed)
+                else:
+                    # Timeout
+                    timeout_embed = discord.Embed(
+                        title='⚠️ Switch Taking Longer Than Expected',
+                        description=(
+                            f"The request to activate **{instance}** was sent, but the lease hasn't transferred yet. "
+                            "It should be ready shortly. Check `/vtt-status` in a moment."
+                        ),
+                        color=discord.Color.orange()
+                    )
+                    await msg.edit(embed=timeout_embed)
         else:
             embed = discord.Embed(
                 title='❌ Activation Failed',
@@ -160,12 +176,12 @@ class UpdateCog(commands.Cog):
             
             msg = await interaction.followup.send(embed=deactivate_embed)
             
-            # Poll for the license status to update
+            # Poll for the license status to update (use_cache=False so we see Lease release immediately)
             def check_inactive(lic):
                 return lic.get('status', {}).get('activeInstance') != instance
 
             final_lic = await wait_for_resource_condition(
-                get_fn=lambda: k8s.get_foundry_license(license_name),
+                get_fn=lambda: k8s.get_foundry_license(license_name, use_cache=False),
                 check_fn=check_inactive,
                 timeout_seconds=60,
                 interval_seconds=5

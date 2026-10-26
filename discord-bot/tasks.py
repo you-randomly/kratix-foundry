@@ -99,10 +99,10 @@ async def check_password_notifications(bot):
         return
         
     try:
-        # Get all ExternalSecrets managed by Kratix
+        # Get all ExternalSecrets for FoundryPassword resources (managed by kro or Kratix)
         es_list = k8s.list_external_secrets(
             namespace=k8s.FOUNDRY_NAMESPACE,
-            label_selector="managed-by=kratix"
+            label_selector="foundry.platform/password"
         )
         
         for es in es_list:

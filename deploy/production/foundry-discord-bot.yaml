@@ -27,6 +27,10 @@ rules:
   - apiGroups: ["foundry.platform"]
     resources: ["foundryinstances/status", "foundrylicenses/status", "foundrypasswords/status"]
     verbs: ["get", "update", "patch"]
+  # Read Leases for license holder status
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch"]
   # Read secrets for license refs
   - apiGroups: [""]
     resources: ["secrets"]

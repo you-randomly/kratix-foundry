@@ -5,3 +5,6 @@ recordings/
 __pycache__/
 *.pyc
 .env
+@eaDir/
+**/@eaDir/**
+

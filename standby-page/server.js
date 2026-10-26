@@ -129,7 +129,9 @@ async function findLicenseForInstance(instanceName, credentials) {
         return { error: 'License not found', scheduledDeleteAt };
     }
 
-    const activeInstanceName = license.spec?.activeInstanceName || null;
+    const requestedInstanceName = license.spec?.activeInstanceName || null;
+    const activeInstanceName = license.status?.activeInstance || requestedInstanceName;
+    const blockedReason = license.status?.blockedReason || null;
 
     // Fetch the active instance's stats directly for real-time player counts
     let activeInstanceStats = null;
@@ -156,6 +158,8 @@ async function findLicenseForInstance(instanceName, credentials) {
         instanceName: instanceName,
         licenseName: licenseName,
         activeInstance: activeInstanceName,
+        requestedInstance: requestedInstanceName,
+        blockedReason: blockedReason,
         connectedPlayers: activeInstanceStats?.connectedPlayers ?? null,
         worldActive: activeInstanceStats?.worldActive ?? null,
         activeWorld: activeInstanceStats?.activeWorld || null,

@@ -1,0 +1,16 @@
+apiVersion: generators.external-secrets.io/v1alpha1
+kind: ClusterGenerator
+metadata:
+  name: foundry-password
+  labels:
+    managed-by: kro
+    app.kubernetes.io/part-of: foundry-platform
+spec:
+  kind: Password
+  generator:
+    passwordSpec:
+      length: 24
+      digits: 4
+      symbols: 0
+      noUpper: false
+      allowRepeat: true

@@ -1,0 +1,46 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: foundry-license
+spec:
+  schema:
+    apiVersion: foundry.platform/v1alpha1
+    kind: FoundryLicense
+    spec:
+      licenseSecretRef:
+        name: string | required=true description="Name of the Secret containing the Foundry VTT license key"
+        key: string | default="license-key" description="Key within the Secret containing the license"
+      activeInstanceName: string | default="" description="Name of the FoundryInstance requested to hold the license lease"
+      switchMode: string | default="block" description="Mode for switching active instance (block or force)"
+      leaseDurationSeconds: integer | default=60 description="TTL in seconds for the license lease before expiry"
+      gateway:
+        parentRef:
+          name: string | default="default-gateway"
+          namespace: string | default="foundry-vtt"
+        dnsTarget: string | default="192.168.139.2"
+        publicIP: string | default="" description="Public IP address for Cloudflare DNS entries"
+        baseDomain: string | default="k8s.orb.local" description="Base domain for instance hostnames"
+      owner: string | default="" description="Email or identifier of the license owner"
+    status:
+      activeInstance: ${lease.spec.holderIdentity}
+      requestedInstance: ${schema.spec.activeInstanceName}
+      leaseDurationSeconds: ${lease.spec.leaseDurationSeconds}
+      renewTime: ${lease.spec.renewTime}
+      acquireTime: ${lease.spec.acquireTime}
+      blockedReason: '${has(lease.metadata.annotations) && "foundry.platform/switch-blocked-reason" in lease.metadata.annotations ? lease.metadata.annotations["foundry.platform/switch-blocked-reason"] : ""}'
+  resources:
+    - id: lease
+      template:
+        apiVersion: coordination.k8s.io/v1
+        kind: Lease
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+          labels:
+            app.kubernetes.io/part-of: foundry-platform
+            foundry.platform/license: ${schema.metadata.name}
+          annotations:
+            foundry.platform/requested-instance: ${schema.spec.activeInstanceName}
+            foundry.platform/switch-mode: ${schema.spec.switchMode}
+        spec:
+          leaseDurationSeconds: ${schema.spec.leaseDurationSeconds}

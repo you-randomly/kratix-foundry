@@ -1,0 +1,12 @@
+# Production Kustomization for kro + FluxCD Deployment
+#
+# Deploys the kro ResourceGraphDefinitions, ESO ClusterGenerator,
+# Standby Page, and Discord Bot directly via FluxCD (no Kratix or MinIO required).
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../kro
+  - foundry-standby-page.yaml
+  - foundry-discord-bot.yaml
