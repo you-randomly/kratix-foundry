@@ -80,6 +80,8 @@ spec:
           image: ghcr.io/you-randomly/kratix-foundry/discord-bot:latest
           imagePullPolicy: Always
           env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
             - name: DISCORD_BOT_TOKEN
               valueFrom:
                 secretKeyRef:
