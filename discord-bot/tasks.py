@@ -129,6 +129,9 @@ async def check_password_notifications(bot):
                 instance_name = spec.get('instanceRef', {}).get('name') or labels.get('foundry.platform/instance')
                 creator_id = labels.get('foundry.platform/owner-id') or annotations.get('foundry.platform/owner-id')
                 
+                if not creator_id and fp_name.startswith("foundry-password-user-"):
+                    creator_id = fp_name[len("foundry-password-user-"):]
+                
                 if not creator_id and instance_name:
                     instance = k8s.get_foundry_instance(instance_name, namespace)
                     if instance:
