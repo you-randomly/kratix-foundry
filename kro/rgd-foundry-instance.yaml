@@ -102,6 +102,10 @@ spec:
             resources: ["leases"]
             resourceNames: ["${schema.spec.licenseRef.name}"]
             verbs: ["get", "patch", "update"]
+          - apiGroups: ["apps"]
+            resources: ["deployments"]
+            resourceNames: ["foundry-${schema.metadata.name}"]
+            verbs: ["get", "patch"]
 
     - id: roleBinding
       template:
@@ -208,7 +212,7 @@ spec:
                     - name: FOUNDRY_ADMIN_KEY
                       valueFrom:
                         secretKeyRef:
-                          name: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-credentials-" + schema.metadata.name}'
+                          name: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-password-" + schema.metadata.name}'
                           key: adminPassword
                     - name: FOUNDRY_LICENSE_KEY
                       valueFrom:
@@ -230,6 +234,13 @@ spec:
                       valueFrom:
                         fieldRef:
                           fieldPath: metadata.namespace
+                    - name: DEPLOYMENT_NAME
+                      value: foundry-${schema.metadata.name}
+                    - name: STARTUP_ADMIN_KEY
+                      valueFrom:
+                        secretKeyRef:
+                          name: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-password-" + schema.metadata.name}'
+                          key: adminPassword
                     - name: ADMIN_KEY_PATH
                       value: /etc/foundry/credentials/adminPassword
                     - name: PYTHONPATH
@@ -240,13 +251,16 @@ spec:
                     - name: credentials
                       mountPath: /etc/foundry/credentials
                       readOnly: true
+                    - name: data
+                      mountPath: /data
+                      readOnly: true
               volumes:
                 - name: data
                   persistentVolumeClaim: '${schema.spec.storageBackend == "pvc" ? {"claimName": "foundry-" + schema.metadata.name + "-data"} : omit()}'
                   nfs: '${schema.spec.storageBackend == "nfs" ? {"server": schema.spec.nfsServer, "path": (schema.spec.nfsBasePath != "" ? schema.spec.nfsBasePath : "/volume1/foundry/instances/" + schema.metadata.name)} : omit()}'
                 - name: credentials
                   secret:
-                    secretName: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-credentials-" + schema.metadata.name}'
+                    secretName: '${schema.spec.adminPasswordSecretRef.name != "" ? schema.spec.adminPasswordSecretRef.name : "foundry-password-" + schema.metadata.name}'
 
     # 6. ClusterIP Service for Foundry VTT
     - id: service

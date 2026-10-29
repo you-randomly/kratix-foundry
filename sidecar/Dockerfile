@@ -1,7 +1,9 @@
 FROM python:3.12-slim
 
-# Install lightweight dependencies for player monitoring & K8s Lease coordination
-RUN pip install --no-cache-dir kubernetes requests
+# Install iproute2 (for ss socket inspection) and Python dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir kubernetes requests
 
 WORKDIR /app
 COPY lib/foundry_lib /app/foundry_lib/

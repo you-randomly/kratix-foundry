@@ -182,63 +182,10 @@ class CreateCog(commands.Cog):
             
             ready_password_res = await wait_for_password()
             
-            password_status_msg = ""
-            
-            # Check if this password needs notification
-            if ready_password_res:
-                pw_status = ready_password_res.get('status', {})
-                if pw_status.get('passwordPendingNotification'):
-                    import base64
-                    import asyncio
-                    
-                    # ESO might still be syncing the secret, so we try a few times
-                    pw = None
-                    for attempt in range(5):
-                        try:
-                            secret = k8s.get_secret(admin_secret_name)
-                            if secret and secret.data and 'adminPassword' in secret.data:
-                                pw = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
-                                break
-                        except Exception as e:
-                            print(f"Attempt {attempt+1} to get secret failed: {e}")
-                        
-                        if attempt < 4:
-                            await asyncio.sleep(5)
-                    
-                    if pw:
-                        try:
-                            dm_embed = discord.Embed(
-                                title=f'🔑 Admin Password for Foundry',
-                                color=discord.Color.green()
-                            )
-                            if unique_password:
-                                dm_embed.description = f"Here is the **unique** admin password for instance **{name}**:"
-                            else:
-                                dm_embed.description = (
-                                    f"Here is your **default** admin password.\n"
-                                    "This password will be used for all future instances unless you choose otherwise."
-                                )
-                                
-                            dm_embed.add_field(name="Password", value=f"```{pw}```", inline=False)
-                            # We don't have the instance URL yet, but that's okay, typical for first creation
-                            
-                            try:
-                                await interaction.user.send(embed=dm_embed)
-                                password_status_msg = "\n🔑 **Password sent via DM!**"
-                                
-                                # Clear the notification flag on the resource to prevent double notifications
-                                k8s.patch_foundry_password_status(
-                                    password_resource_name, 
-                                    {"passwordPendingNotification": False}
-                                )
-                            except discord.Forbidden:
-                                password_status_msg = "\n⚠️ **Could not DM password. Please enable DMs.**"
-                        except Exception as e:
-                            print(f"Error sending password DM: {e}")
-                            password_status_msg = "\n⚠️ **Error sending password DM.**"
-                    else:
-                        print(f"Timed out waiting for secret {admin_secret_name}")
-                        password_status_msg = "\n⚠️ **Password still generating. Check your DMs shortly.**"
+            if ready_password_res and ready_password_res.get('status', {}).get('phase') == 'Ready':
+                password_status_msg = "\n🔑 **Password generated and sent to your DMs!**"
+            else:
+                password_status_msg = "\n🔑 **Password generating in background (check your DMs shortly).**"
             
             # Wait for the instance to be ready
             def check_ready(inst):

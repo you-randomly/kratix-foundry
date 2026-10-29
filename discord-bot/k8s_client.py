@@ -2,7 +2,9 @@
 Kubernetes client and CRUD operations for Foundry resources.
 """
 
+import base64
 import json
+import time
 from typing import Any, Dict, List, Optional
 
 from kubernetes import client, config as k8s_config
@@ -406,26 +408,95 @@ def delete_foundry_password(name: str, namespace: str = None) -> Dict[str, Any]:
         return {'success': False, 'message': f'Failed to delete FoundryPassword: {error_msg}'}
 
 
-def patch_foundry_password_status(name: str, status: Dict[str, Any], namespace: str = None) -> Dict[str, Any]:
-    """Patch the status of a FoundryPassword resource."""
+def request_password_rotation(name: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+    """Trigger rotation of a FoundryPassword by setting spec.rotateRequestedAt."""
     if not k8s_api:
         return {'success': False, 'message': 'Kubernetes not connected'}
     
     ns = namespace or FOUNDRY_NAMESPACE
     try:
-        # Patch namespaced custom object status subresource
-        k8s_api.patch_namespaced_custom_object_status(
+        patch_body = {
+            "spec": {
+                "rotateRequestedAt": str(int(time.time()))
+            }
+        }
+        k8s_api.patch_namespaced_custom_object(
             group=CRD_GROUP,
             version=CRD_VERSION,
             namespace=ns,
             plural=CRD_PASSWORD_PLURAL,
             name=name,
-            body={'status': status}
+            body=patch_body
         )
-        return {'success': True, 'message': f'Updated status of FoundryPassword "{name}"'}
+        return {'success': True, 'message': f'Requested password rotation for "{name}"'}
     except ApiException as e:
+        if e.status == 404:
+            return {'success': False, 'message': f'FoundryPassword "{name}" not found'}
         error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
-        return {'success': False, 'message': f'Failed to patch FoundryPassword status: {error_msg}'}
+        return {'success': False, 'message': f'Failed to request rotation: {error_msg}'}
+
+
+def annotate_foundry_password(name: str, annotations: Dict[str, str], namespace: Optional[str] = None) -> Dict[str, Any]:
+    """Add or update annotations on a FoundryPassword resource."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+    
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        patch_body = {
+            "metadata": {
+                "annotations": annotations
+            }
+        }
+        k8s_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_PASSWORD_PLURAL,
+            name=name,
+            body=patch_body
+        )
+        return {'success': True, 'message': f'Updated annotations on FoundryPassword "{name}"'}
+    except ApiException as e:
+        if e.status == 404:
+            return {'success': False, 'message': f'FoundryPassword "{name}" not found'}
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to annotate FoundryPassword: {error_msg}'}
+
+
+def get_instance_owner_id(instance: Dict[str, Any]) -> Optional[str]:
+    """Get the owner Discord ID of a FoundryInstance."""
+    metadata = instance.get('metadata', {})
+    annotations = metadata.get('annotations', {}) or {}
+    owner_id = annotations.get('foundry.platform/created-by-id')
+    if not owner_id:
+        labels = metadata.get('labels', {}) or {}
+        owner_id = labels.get('foundry.platform/owner-id')
+    return owner_id
+
+
+def password_secret_name(instance: Dict[str, Any]) -> str:
+    """Resolve the secret name containing the admin password for an instance."""
+    admin_ref = instance.get('spec', {}).get('adminPasswordSecretRef', {}).get('name')
+    if admin_ref:
+        return admin_ref
+    instance_name = instance.get('metadata', {}).get('name')
+    return f"foundry-password-{instance_name}"
+
+
+def get_admin_password_plaintext(secret_name: str, namespace: Optional[str] = None) -> Optional[str]:
+    """Read the adminPassword from a Secret and return plaintext."""
+    secret = get_secret(secret_name, namespace)
+    if not secret or not secret.data:
+        return None
+    raw_val = secret.data.get('adminPassword')
+    if not raw_val:
+        return None
+    try:
+        return base64.b64decode(raw_val).decode('utf-8')
+    except Exception as e:
+        print(f"Error decoding secret {secret_name}: {e}")
+        return None
 
 
 # ============================================================================

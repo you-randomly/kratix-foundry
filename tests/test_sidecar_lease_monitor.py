@@ -15,6 +15,7 @@ sys.modules.setdefault("kubernetes.client", MagicMock())
 sys.modules.setdefault("kubernetes.config", MagicMock())
 sys.modules.setdefault("requests", MagicMock())
 
+from foundry_lib.activity import ActivityEvaluation
 from foundry_lib.sidecar_monitor import (
     ANNOTATION_REQUESTED_INSTANCE,
     ANNOTATION_SWITCH_BLOCKED_REASON,
@@ -222,6 +223,71 @@ class TestSidecarLeaseMonitor(unittest.TestCase):
         self.assertTrue(result["isActive"])
         self.assertEqual(lease.spec.holder_identity, "instance-b")
         self.assertEqual(lease.spec.lease_transitions, 2)
+
+    def test_block_switch_when_activity_active_even_with_zero_players(self):
+        earlier = self.now - timedelta(seconds=15)
+        lease = make_lease(
+            holder_identity="instance-a",
+            requested_instance="instance-b",
+            switch_mode="block",
+            renew_time=earlier,
+        )
+        self.coord_api.read_namespaced_lease.return_value = lease
+
+        activity = ActivityEvaluation(
+            is_safe=False,
+            reasons=["1 active browser session(s) (Setup)", "package download in progress"],
+            connected_players=0,
+            world_active=False
+        )
+
+        result = reconcile_lease(
+            coordination_api=self.coord_api,
+            instance_name="instance-a",
+            license_name="main-license",
+            namespace="foundry-vtt",
+            stats={"connectedPlayers": 0},
+            activity_eval=activity,
+            now=self.now,
+        )
+
+        self.assertEqual(result["action"], "blocked_release")
+        self.assertTrue(result["isActive"])
+        self.assertEqual(lease.spec.holder_identity, "instance-a")
+        self.assertIn("1 active browser session(s) (Setup)", lease.metadata.annotations[ANNOTATION_SWITCH_BLOCKED_REASON])
+        self.assertIn("package download in progress", lease.metadata.annotations[ANNOTATION_SWITCH_BLOCKED_REASON])
+
+    def test_release_switch_when_activity_is_safe(self):
+        earlier = self.now - timedelta(seconds=15)
+        lease = make_lease(
+            holder_identity="instance-a",
+            requested_instance="instance-b",
+            switch_mode="block",
+            renew_time=earlier,
+        )
+        self.coord_api.read_namespaced_lease.return_value = lease
+
+        activity = ActivityEvaluation(
+            is_safe=True,
+            reasons=[],
+            idle_sessions=1,
+            connected_players=0,
+            world_active=False
+        )
+
+        result = reconcile_lease(
+            coordination_api=self.coord_api,
+            instance_name="instance-a",
+            license_name="main-license",
+            namespace="foundry-vtt",
+            stats={"connectedPlayers": 0},
+            activity_eval=activity,
+            now=self.now,
+        )
+
+        self.assertEqual(result["action"], "released")
+        self.assertFalse(result["isActive"])
+        self.assertEqual(lease.spec.holder_identity, "")
 
 
 if __name__ == "__main__":

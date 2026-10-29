@@ -126,10 +126,10 @@ class UpdateCog(commands.Cog):
                 current_holder = latest_lic.get('status', {}).get('activeInstance')
                 if blocked_reason:
                     queued_embed = discord.Embed(
-                        title='⏳ Switch Queued (Players Connected)',
+                        title='⏳ Switch Queued (Waiting for Safe State)',
                         description=(
                             f"**{instance}** is queued to acquire license **{license_name}** as soon as "
-                            f"**{current_holder}** has 0 connected players.\n\n"
+                            f"**{current_holder}** is safe to interrupt (no active players, downloads, or admin setup sessions).\n\n"
                             f"**Reason:** {blocked_reason}"
                         ),
                         color=discord.Color.gold()

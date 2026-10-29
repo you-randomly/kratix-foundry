@@ -1,16 +1,26 @@
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import requests
 from kubernetes import client, config
+from foundry_lib.activity import (
+    ActivityEvaluation,
+    DownloadTracker,
+    SessionTracker,
+    evaluate_activity,
+    parse_ss,
+)
 from foundry_lib.foundry_api import check_players
 
 ANNOTATION_REQUESTED_INSTANCE = "foundry.platform/requested-instance"
 ANNOTATION_SWITCH_MODE = "foundry.platform/switch-mode"
 ANNOTATION_SWITCH_BLOCKED_REASON = "foundry.platform/switch-blocked-reason"
 ANNOTATION_SCHEDULED_DELETE = "foundry.platform/scheduled-delete-at"
+ANNOTATION_INSTANCE_ACTIVITY = "foundry.platform/activity"
 
 DEFAULT_LEASE_DURATION_SECONDS = 60
 DEFAULT_POLL_INTERVAL_SECONDS = 15
@@ -46,12 +56,66 @@ def is_lease_expired(lease: Any, now: Optional[datetime] = None) -> bool:
     return now > (renew_time + timedelta(seconds=duration))
 
 
+def run_ss_probe() -> Optional[str]:
+    """Run ss command to inspect socket information. Returns None on failure."""
+    try:
+        res = subprocess.run(
+            ["ss", "-tinH", "state", "established"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if res.returncode == 0:
+            return res.stdout
+    except Exception as e:
+        print(f"WARN: ss probe failed: {e}", flush=True)
+    return None
+
+
+def inspect_activity(
+    session_tracker: SessionTracker,
+    download_tracker: DownloadTracker,
+    now_ts: float,
+    stats: Dict[str, Any],
+    ss_output: Optional[str] = None,
+) -> ActivityEvaluation:
+    """
+    Evaluate activity using session and download trackers against socket telemetry.
+    If ss_output is None and cannot be probed, fails safe (treats as busy).
+    """
+    if ss_output is None:
+        ss_output = run_ss_probe()
+
+    if ss_output is None:
+        # Cannot inspect sockets - fail safe
+        return ActivityEvaluation(
+            is_safe=False,
+            reasons=["network socket inspection unavailable"],
+            connected_players=stats.get("connectedPlayers", -1),
+            world_active=stats.get("worldActive", False),
+        )
+
+    conns = parse_ss(ss_output)
+    active_sessions, idle_sessions = session_tracker.update(conns, now_ts)
+    downloads_active, downloads_settling = download_tracker.update(conns, now_ts)
+
+    return evaluate_activity(
+        connected_players=stats.get("connectedPlayers", 0),
+        world_active=stats.get("worldActive", False),
+        active_sessions=active_sessions,
+        idle_sessions=idle_sessions,
+        downloads_active=downloads_active,
+        downloads_settling=downloads_settling,
+    )
+
+
 def reconcile_lease(
     coordination_api: Any,
     instance_name: str,
     license_name: str,
     namespace: str,
     stats: Dict[str, Any],
+    activity_eval: Optional[ActivityEvaluation] = None,
     is_scheduled_for_delete: bool = False,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
@@ -62,7 +126,7 @@ def reconcile_lease(
       and the Lease is currently unheld or expired.
     - Renews the Lease while `instance_name` holds it and remains the requested instance.
     - Releases the Lease when another instance (or standby) is requested, respecting
-      `foundry.platform/switch-mode` (`block` waits for 0 connectedPlayers; `force` releases immediately).
+      `foundry.platform/switch-mode` (`block` waits for safe interrupt condition; `force` releases immediately).
     """
     now = _ensure_utc(now) or datetime.now(timezone.utc)
     lease = coordination_api.read_namespaced_lease(name=license_name, namespace=namespace)
@@ -97,25 +161,28 @@ def reconcile_lease(
             }
 
         # Another instance (or standby) was requested, or this instance is scheduled for deletion
-        connected_players = stats.get("connectedPlayers", 0)
-        should_block = (
-            not is_scheduled_for_delete
-            and switch_mode == "block"
-            and connected_players != 0
-        )
+        if activity_eval is not None:
+            should_block = (
+                not is_scheduled_for_delete
+                and switch_mode == "block"
+                and not activity_eval.is_safe
+            )
+            reasons_text = ", ".join(activity_eval.reasons) if activity_eval.reasons else "activity detected"
+        else:
+            connected_players = stats.get("connectedPlayers", 0)
+            should_block = (
+                not is_scheduled_for_delete
+                and switch_mode == "block"
+                and connected_players != 0
+            )
+            if connected_players > 0:
+                reasons_text = f"{connected_players} player(s) connected to '{instance_name}'"
+            else:
+                reasons_text = f"unable to verify 0 players on '{instance_name}'"
 
         if should_block:
             target_label = requested_instance or "standby"
-            if connected_players > 0:
-                reason = (
-                    f"Switch to '{target_label}' queued: "
-                    f"{connected_players} player(s) connected to '{instance_name}'"
-                )
-            else:
-                reason = (
-                    f"Switch to '{target_label}' queued: "
-                    f"unable to verify 0 players on '{instance_name}'"
-                )
+            reason = f"Switch to '{target_label}' queued: {reasons_text}"
             lease.spec.renew_time = now
             annotations[ANNOTATION_SWITCH_BLOCKED_REASON] = reason
             coordination_api.replace_namespaced_lease(
@@ -129,7 +196,7 @@ def reconcile_lease(
                 "blockedReason": reason,
             }
 
-        # Safe to release lease (0 players, force mode, or scheduled for deletion)
+        # Safe to release lease (safe to interrupt, force mode, or scheduled for deletion)
         lease.spec.holder_identity = ""
         lease.spec.renew_time = None
         annotations.pop(ANNOTATION_SWITCH_BLOCKED_REASON, None)
@@ -184,15 +251,19 @@ def monitor_loop():
     instance_name = os.getenv("INSTANCE_NAME")
     license_name = os.getenv("LICENSE_NAME")
     admin_key_path = os.getenv("ADMIN_KEY_PATH", "/etc/foundry/credentials/adminPassword")
+    startup_admin_key = os.getenv("STARTUP_ADMIN_KEY", "")
+    deployment_name = os.getenv("DEPLOYMENT_NAME", f"foundry-{instance_name}")
     poll_interval = int(os.getenv("POLL_INTERVAL_SECONDS", str(DEFAULT_POLL_INTERVAL_SECONDS)))
+    idle_threshold = float(os.getenv("SETUP_IDLE_SECONDS", "300"))
+    settle_seconds = float(os.getenv("DOWNLOAD_SETTLE_SECONDS", "60"))
 
     if not instance_name:
         print("FATAL: INSTANCE_NAME env var not set", flush=True)
         sys.exit(1)
 
     print(
-        f"Starting lease & status monitor for instance='{instance_name}' "
-        f"(license='{license_name or 'auto'}') in namespace='{namespace}'...",
+        f"Starting lease, status & activity monitor for instance='{instance_name}' "
+        f"(deployment='{deployment_name}', license='{license_name or 'auto'}') in namespace='{namespace}'...",
         flush=True,
     )
 
@@ -203,10 +274,17 @@ def monitor_loop():
 
     custom_api = client.CustomObjectsApi()
     coordination_api = client.CoordinationV1Api()
+    apps_api = client.AppsV1Api()
+
+    session_tracker = SessionTracker(idle_threshold_seconds=idle_threshold)
+    download_tracker = DownloadTracker(settle_seconds=settle_seconds)
+    http_session = requests.Session()
 
     while True:
         try:
-            # 1. Read FoundryInstance metadata & spec (for licenseRef and scheduled-delete check)
+            now_ts = time.time()
+
+            # 1. Read FoundryInstance metadata & spec
             instance_obj = custom_api.get_namespaced_custom_object(
                 group="foundry.platform",
                 version="v1alpha1",
@@ -220,14 +298,15 @@ def monitor_loop():
                 instance_obj.get("spec", {}).get("licenseRef", {}).get("name")
             )
 
-            # 2. Check Players (Localhost:30000)
+            # 2. Check Players & World State (Localhost:30000) using persistent session
+            current_admin_key = ""
             if os.path.exists(admin_key_path):
                 with open(admin_key_path, "r") as f:
-                    admin_key = f.read().strip()
-                stats = check_players("localhost:30000", admin_key)
+                    current_admin_key = f.read().strip()
+                stats = check_players("localhost:30000", admin_key=current_admin_key, session=http_session)
             else:
-                print(f"Waiting for admin key at {admin_key_path}...", flush=True)
                 stats = {
+                    "active": False,
                     "connectedPlayers": -1,
                     "worldActive": False,
                     "worldName": None,
@@ -235,7 +314,52 @@ def monitor_loop():
                     "error": "Admin key secret not mounted yet",
                 }
 
-            # 3. Reconcile License Lease
+            # 3. Evaluate Network & Session Activity
+            activity_eval = inspect_activity(
+                session_tracker=session_tracker,
+                download_tracker=download_tracker,
+                now_ts=now_ts,
+                stats=stats,
+            )
+
+            # 4. Check for Password Rotation and Rollout if Safe
+            if startup_admin_key and current_admin_key and startup_admin_key != current_admin_key:
+                if activity_eval.is_safe:
+                    print(
+                        f"Admin password rotation detected on '{instance_name}' and instance is safe to interrupt. "
+                        f"Triggering rollout restart for deployment '{deployment_name}'...",
+                        flush=True,
+                    )
+                    restart_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                    patch_body = {
+                        "spec": {
+                            "template": {
+                                "metadata": {
+                                    "annotations": {
+                                        "foundry.platform/restartedAt": restart_time
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    try:
+                        apps_api.patch_namespaced_deployment(
+                            name=deployment_name,
+                            namespace=namespace,
+                            body=patch_body,
+                        )
+                        print(f"Successfully triggered rollout restart of '{deployment_name}' at {restart_time}.", flush=True)
+                        time.sleep(poll_interval)
+                        continue
+                    except Exception as deploy_err:
+                        print(f"Error triggering deployment restart: {deploy_err}", flush=True)
+                else:
+                    print(
+                        f"Admin password rotation pending for '{instance_name}', waiting for safe state: {activity_eval.reasons}",
+                        flush=True,
+                    )
+
+            # 5. Reconcile License Lease
             lease_result = {"isActive": False, "action": "skipped"}
             if resolved_license_name:
                 try:
@@ -245,6 +369,7 @@ def monitor_loop():
                         license_name=resolved_license_name,
                         namespace=namespace,
                         stats=stats,
+                        activity_eval=activity_eval,
                         is_scheduled_for_delete=is_scheduled_for_delete,
                     )
                     print(
@@ -255,7 +380,7 @@ def monitor_loop():
                 except Exception as lease_err:
                     print(f"Error reconciling lease '{resolved_license_name}': {lease_err}", flush=True)
 
-            # 4. Update FoundryInstance Status
+            # 6. Update FoundryInstance Status & Activity Annotation
             body = {
                 "status": {
                     "isActive": lease_result.get("isActive", False),
@@ -275,6 +400,25 @@ def monitor_loop():
                 name=instance_name,
                 body=body,
             )
+
+            # Publish activity description to annotations if changed
+            activity_summary = ", ".join(activity_eval.reasons) if activity_eval.reasons else "idle"
+            if inst_annotations.get(ANNOTATION_INSTANCE_ACTIVITY) != activity_summary:
+                annot_patch = {
+                    "metadata": {
+                        "annotations": {
+                            ANNOTATION_INSTANCE_ACTIVITY: activity_summary
+                        }
+                    }
+                }
+                custom_api.patch_namespaced_custom_object(
+                    group="foundry.platform",
+                    version="v1alpha1",
+                    namespace=namespace,
+                    plural="foundryinstances",
+                    name=instance_name,
+                    body=annot_patch,
+                )
 
         except Exception as e:
             print(f"Error in monitor loop: {str(e)}", flush=True)

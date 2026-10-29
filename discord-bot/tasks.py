@@ -90,87 +90,69 @@ PASSWORD_NOTIFIED_ANNOTATION = "foundry.platform/password-notified-at"
 
 @tasks.loop(seconds=15)
 async def check_password_notifications(bot):
-    """Background task to notify users of generated/refreshed passwords via ESO.
+    """Background task to notify users of generated/refreshed passwords.
     
-    Monitors ExternalSecrets for Foundry instances and sends DM notifications
-    when a password has been synced (either created or refreshed).
+    Monitors FoundryPassword resources and sends DM notifications
+    when a password has been generated or refreshed by kro and ESO.
     """
     if not k8s.is_connected():
         return
         
     try:
-        # Get all ExternalSecrets for FoundryPassword resources (managed by kro or Kratix)
-        es_list = k8s.list_external_secrets(
-            namespace=k8s.FOUNDRY_NAMESPACE,
-            label_selector="foundry.platform/password"
-        )
+        passwords = k8s.get_foundry_passwords(namespace=k8s.FOUNDRY_NAMESPACE)
         
-        for es in es_list:
+        for fp in passwords:
             try:
-                # Check if synced (Ready=True)
-                if not k8s.is_external_secret_synced(es):
+                status = fp.get('status', {})
+                # Check if ready (phase is Ready or ready condition is True)
+                if status.get('phase') != 'Ready' and not status.get('ready'):
                     continue
                 
-                es_name = es['metadata']['name']
-                namespace = es['metadata']['namespace']
-                metadata = es.get('metadata', {})
-                labels = metadata.get('labels', {})
-                annotations = metadata.get('annotations', {})
+                fp_name = fp['metadata']['name']
+                namespace = fp['metadata'].get('namespace', k8s.FOUNDRY_NAMESPACE)
+                metadata = fp.get('metadata', {})
+                labels = metadata.get('labels', {}) or {}
+                annotations = metadata.get('annotations', {}) or {}
                 
-                # Check if this is a FoundryPassword managed secret
-                if 'foundry.platform/password' not in labels:
-                    continue
-
-                # Get the refresh time from ESO status
-                refresh_time = k8s.get_external_secret_refresh_time(es)
+                refresh_time = status.get('lastRefreshed')
                 if not refresh_time:
                     continue
                 
                 # Check if we already notified for this refresh
                 last_notified = annotations.get(PASSWORD_NOTIFIED_ANNOTATION)
-                if last_notified and last_notified >= refresh_time:
+                if last_notified and str(last_notified) >= str(refresh_time):
                     continue
                 
                 # Identification
-                password_type = labels.get('foundry.platform/password-type', 'default')
-                instance_name = labels.get('foundry.platform/instance')
-                creator_id = labels.get('foundry.platform/owner-id')
+                spec = fp.get('spec', {})
+                password_type = spec.get('type', 'default')
+                instance_name = spec.get('instanceRef', {}).get('name') or labels.get('foundry.platform/instance')
+                creator_id = labels.get('foundry.platform/owner-id') or annotations.get('foundry.platform/owner-id')
+                
+                if not creator_id and instance_name:
+                    instance = k8s.get_foundry_instance(instance_name, namespace)
+                    if instance:
+                        creator_id = k8s.get_instance_owner_id(instance)
                 
                 if not creator_id:
-                    # Fallback for older resources: if instance_name is present, get it from instance
-                    if instance_name:
-                        instance = k8s.get_foundry_instance(instance_name, namespace)
-                        if instance:
-                            creator_id = instance['metadata'].get('annotations', {}).get('foundry.platform/created-by-id')
-                
-                if not creator_id:
-                    print(f"Could not find creator ID for ExternalSecret {es_name}, skipping notification")
                     continue
                 
-                # Get password from the secret created by ESO
-                secret_name = es.get('spec', {}).get('target', {}).get('name')
-                if not secret_name:
-                    secret_name = es_name  # ESO defaults to ExternalSecret name
-                
-                secret = k8s.get_secret(secret_name, namespace)
-                if not secret or not secret.data or 'adminPassword' not in secret.data:
-                    print(f"Secret {secret_name} not found or missing adminPassword")
+                # Retrieve plaintext password
+                password = k8s.get_admin_password_plaintext(fp_name, namespace)
+                if not password:
                     continue
-                
-                password = base64.b64decode(secret.data['adminPassword']).decode('utf-8')
                 
                 # Send DM to creator
                 try:
                     user = await bot.fetch_user(int(creator_id))
                     if user:
-                        # Prepare embed
                         if password_type == 'instance' and instance_name:
                             title = '🔑 Admin Password for Foundry Instance'
                             description = f"The admin password for instance **{instance_name}** has been generated/reset."
                             color = discord.Color.green()
                         else:
-                            title = '🔑 Default Admin Password Reset'
-                            description = "Your **default** admin password has been generated/reset. This will be used for future instances."
+                            title = '🔑 Default Admin Password'
+                            description = "Your **default** admin password has been generated/reset."
                             color = discord.Color.blue()
                             
                         embed = discord.Embed(title=title, description=description, color=color)
@@ -178,47 +160,48 @@ async def check_password_notifications(bot):
                         if instance_name:
                             embed.add_field(name="Instance", value=instance_name, inline=True)
                         
-                        embed.add_field(name="Password", value=f"```{password}```", inline=False)
+                        embed.add_field(name="Password", value=f"||`{password}`||", inline=False)
                         
-                        # Try to get URL if it's an instance password
                         if instance_name:
                             instance = k8s.get_foundry_instance(instance_name, namespace)
                             if instance:
                                 license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
-                                base_domain = "k8s.orb.local"
+                                base_domain = "lab.jake-watson.co.uk"
                                 if license_name:
                                     lic = k8s.get_foundry_license(license_name, namespace)
                                     if lic:
                                         base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', base_domain)
                                 embed.add_field(name="URL", value=f"https://{instance_name}.{base_domain}", inline=False)
 
-                        footer = "Keep this password safe! "
-                        if password_type == 'instance':
-                            footer += "You can reset it anytime with /vtt-password reset-instance"
-                        else:
-                            footer += "You can reset it anytime with /vtt-password reset-default"
+                        footer = "Keep this password safe! Click to unmask. Applies automatically once safe."
                         embed.set_footer(text=footer)
                         
                         await user.send(embed=embed)
                         print(f"Sent {password_type} password DM to user {creator_id} for {instance_name or 'default'}")
                         
-                        # Mark as notified by annotating the ExternalSecret
-                        k8s.annotate_external_secret(
-                            es_name,
-                            {PASSWORD_NOTIFIED_ANNOTATION: refresh_time},
+                        # Mark as notified by annotating the FoundryPassword
+                        k8s.annotate_foundry_password(
+                            fp_name,
+                            {PASSWORD_NOTIFIED_ANNOTATION: str(refresh_time)},
                             namespace
                         )
-                        print(f"Marked ExternalSecret {es_name} as notified at {refresh_time}")
+                        print(f"Marked FoundryPassword {fp_name} as notified at {refresh_time}")
                         
                 except discord.NotFound:
                     print(f"User {creator_id} not found, cannot send password DM")
                 except discord.Forbidden:
                     print(f"Cannot send DM to user {creator_id} (DMs disabled)")
+                    # Annotate so we don't retry endlessly
+                    k8s.annotate_foundry_password(
+                        fp_name,
+                        {PASSWORD_NOTIFIED_ANNOTATION: str(refresh_time)},
+                        namespace
+                    )
                 except Exception as e:
                     print(f"Failed to send DM to user {creator_id}: {e}")
                     
             except Exception as e:
-                print(f"Error processing ExternalSecret {es.get('metadata', {}).get('name')}: {e}")
+                print(f"Error processing FoundryPassword {fp.get('metadata', {}).get('name')}: {e}")
                 
     except Exception as e:
         print(f"Error in check_password_notifications: {e}")
