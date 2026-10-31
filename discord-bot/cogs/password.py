@@ -91,6 +91,7 @@ class PasswordCog(commands.Cog):
             return
 
         target_label = "Default Password"
+        instance = None
         if name:
             instance = k8s.get_foundry_instance(name)
             if not instance:
@@ -106,6 +107,16 @@ class PasswordCog(commands.Cog):
             secret_name = f"foundry-password-user-{interaction.user.id}"
 
         password = k8s.get_admin_password_plaintext(secret_name, FOUNDRY_NAMESPACE)
+        pending_note = ""
+        if instance and password:
+            namespace = instance.get('metadata', {}).get('namespace', FOUNDRY_NAMESPACE)
+            running = k8s.get_running_admin_password(name, namespace)
+            if running and running != password:
+                pending_note = (
+                    "\n⚠️ A password reset is pending. The instance is still using the password below; "
+                    "the new password will apply once it restarts (use `/vtt-password show` again afterwards)."
+                )
+                password = running
         if not password:
             await interaction.followup.send(
                 f"❌ Could not retrieve password for `{secret_name}`. It may still be generating.",
@@ -115,7 +126,7 @@ class PasswordCog(commands.Cog):
 
         embed = discord.Embed(
             title="🔑 Foundry VTT Admin Password",
-            description=f"Admin password for **{target_label}**:",
+            description=f"Admin password for **{target_label}**:{pending_note}",
             color=discord.Color.blue()
         )
         embed.add_field(name="Password", value=f"||`{password}`||", inline=False)
