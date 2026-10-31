@@ -22,6 +22,10 @@ kubectl get kustomization -n flux-system
 
 For detailed prerequisites and manual installation steps, see [docs/SETUP.md](docs/SETUP.md).
 
+An opt-in Kro workload pilot and migration boundaries are documented in
+[docs/kro-migration.md](docs/kro-migration.md); the production platform remains
+Kratix-based.
+
 ## Architecture
 
 ┌─────────────────────────────────────────────────────────────────────┐
