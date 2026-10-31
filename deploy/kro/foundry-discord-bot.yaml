@@ -39,6 +39,13 @@ rules:
   - apiGroups: ["external-secrets.io"]
     resources: ["externalsecrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read pods and exec to show the admin password in use by a running instance
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
   # Read namespaces for context
   - apiGroups: [""]
     resources: ["namespaces"]

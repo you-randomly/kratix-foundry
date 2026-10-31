@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
+from kubernetes.stream import stream
 
 from config import (
     CRD_GROUP,
@@ -917,3 +918,36 @@ def patch_instance_annotations(name: str, annotations: Dict[str, Any], namespace
     except ApiException as e:
         error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
         return {'success': False, 'message': f'Failed to patch annotations: {error_msg}'}
+
+
+def get_running_admin_password(instance_name: str, namespace: Optional[str] = None) -> Optional[str]:
+    """Read the admin password actually in use by the running pod.
+
+    The pod receives the password via an env var resolved at startup, so after a
+    rotation the Secret may differ until the pod restarts.
+    """
+    if not k8s_api:
+        return None
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        core_api = client.CoreV1Api()
+        pods = core_api.list_namespaced_pod(
+            ns, label_selector=f"app=foundry-vtt,instance={instance_name}"
+        ).items
+        pods = [
+            p for p in pods
+            if p.status and p.status.phase == 'Running' and not p.metadata.deletion_timestamp
+        ]
+        if not pods:
+            return None
+        out = stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pods[0].metadata.name, ns,
+            container='foundry-vtt',
+            command=['printenv', 'FOUNDRY_ADMIN_KEY'],
+            stderr=False, stdin=False, stdout=True, tty=False,
+        )
+        return out.rstrip('\r\n') or None
+    except Exception as e:
+        print(f"Could not read running admin password for {instance_name}: {e}")
+        return None
