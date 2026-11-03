@@ -57,10 +57,13 @@ async def on_ready():
         cleanup_expired_deletions.start()
         print('Started cleanup_expired_deletions background task')
         
-    from tasks import check_password_notifications
+    from tasks import check_password_notifications, reconcile_license_messages
     if not check_password_notifications.is_running():
         check_password_notifications.start(bot)
         print('Started check_password_notifications background task')
+    if not reconcile_license_messages.is_running():
+        reconcile_license_messages.start(bot)
+        print('Started reconcile_license_messages background task')
 
     # Pre-warm caches
     bot.loop.create_task(versions.refresh_cache())

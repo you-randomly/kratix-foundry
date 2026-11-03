@@ -44,16 +44,29 @@ class StatusCog(commands.Cog):
                 # Look up the license to determine true active status
                 license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
                 is_active_from_license = None
+                license_obj = None
                 if license_name:
-                    license_obj = k8s.get_foundry_license(license_name)
+                    license_obj = k8s.get_foundry_license(license_name, use_cache=False)
                     if license_obj:
-                        active_instance = (
-                            license_obj.get('status', {}).get('activeInstance') or 
-                            license_obj.get('spec', {}).get('activeInstanceName')
-                        )
+                        active_instance = (license_obj.get('status', {}).get('activeInstance') or '').strip()
                         is_active_from_license = (active_instance == instance)
                 
                 embed = format_instance_embed(inst, is_active_override=is_active_from_license)
+                if license_obj:
+                    req_inst = (license_obj.get('spec', {}).get('activeInstanceName') or '').strip()
+                    blocked = (license_obj.get('status', {}).get('blockedReason') or '').strip()
+                    if not is_active_from_license and req_inst == instance:
+                        embed.add_field(
+                            name='Switch Status',
+                            value=f'⏳ Queued ({blocked})' if blocked else '🔄 Acquiring license...',
+                            inline=False,
+                        )
+                    elif is_active_from_license and req_inst != instance and blocked:
+                        embed.add_field(
+                            name='Pending Switch',
+                            value=blocked,
+                            inline=False,
+                        )
                 await interaction.followup.send(embed=embed)
             else:
                 embed = discord.Embed(
@@ -76,18 +89,20 @@ class StatusCog(commands.Cog):
                 await interaction.followup.send(embed=embed)
                 return
             
-            # Build a map of license -> active instance for quick lookup
+            # Build maps of license -> active / requested instance for quick lookup
             license_active_map = {}
+            license_requested_map = {}
             for inst in instances:
                 license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
                 if license_name and license_name not in license_active_map:
-                    license_obj = k8s.get_foundry_license(license_name)
+                    license_obj = k8s.get_foundry_license(license_name, use_cache=False)
                     if license_obj:
-                        active_name = (
-                            license_obj.get('status', {}).get('activeInstance') or
-                            license_obj.get('spec', {}).get('activeInstanceName')
-                        )
-                        license_active_map[license_name] = active_name
+                        license_active_map[license_name] = (
+                            license_obj.get('status', {}).get('activeInstance') or ''
+                        ).strip()
+                        license_requested_map[license_name] = (
+                            license_obj.get('spec', {}).get('activeInstanceName') or ''
+                        ).strip()
             
             # Build summary table
             summary_lines = []
@@ -97,9 +112,15 @@ class StatusCog(commands.Cog):
                 status = inst.get('status', {})
                 license_name = spec.get('licenseRef', {}).get('name')
                 is_active = license_active_map.get(license_name) == inst_name
+                is_queued = (not is_active) and (license_requested_map.get(license_name) == inst_name)
                 
                 # Status emoji
-                status_emoji = '🟢' if is_active else '🟠'
+                if is_active:
+                    status_emoji = '🟢'
+                elif is_queued:
+                    status_emoji = '⏳'
+                else:
+                    status_emoji = '🟠'
                 
                 # Player count
                 players = status.get('connectedPlayers', 0)

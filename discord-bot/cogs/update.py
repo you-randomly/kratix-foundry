@@ -2,6 +2,7 @@
 /vtt-update command cog - Activate/deactivate Foundry instances.
 """
 
+import asyncio
 from typing import List
 
 import discord
@@ -10,8 +11,8 @@ from discord.ext import commands
 
 from config import ANNOTATION_SCHEDULED_DELETE
 from embeds import format_instance_embed
-from tasks import wait_for_resource_condition
 import k8s_client as k8s
+from switch_tracker import switch_tracker
 
 
 class UpdateCog(commands.Cog):
@@ -61,10 +62,9 @@ class UpdateCog(commands.Cog):
     
     async def _handle_activate(self, interaction: discord.Interaction, instance: str):
         """Handle the activate action."""
-        # Check if instance is scheduled for deletion
-        inst = k8s.get_foundry_instance(instance)
+        inst = await asyncio.to_thread(k8s.get_foundry_instance, instance)
         if inst:
-            annotations = inst.get('metadata', {}).get('annotations', {})
+            annotations = inst.get('metadata', {}).get('annotations', {}) or {}
             scheduled_at = annotations.get(ANNOTATION_SCHEDULED_DELETE)
             if scheduled_at:
                 embed = discord.Embed(
@@ -76,76 +76,64 @@ class UpdateCog(commands.Cog):
                 await interaction.followup.send(embed=embed)
                 return
 
-        result = k8s.activate_instance(instance)
+        result = await asyncio.to_thread(k8s.activate_instance, instance)
         
         if result['success']:
             license_name = result.get('license_name')
             if not license_name:
                 await interaction.followup.send(content=f"✅ {result['message']}")
                 return
-            
-            # Send initial progress message
+
+            inst_ns = (inst or {}).get('metadata', {}).get('namespace') or k8s.FOUNDRY_NAMESPACE
+
+            # Fast path if already active
+            if result.get('already_active'):
+                lic = await asyncio.to_thread(k8s.get_foundry_license, license_name, inst_ns, False) or {}
+                base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', 'k8s.orb.local')
+                url = f"https://{instance}.{base_domain}"
+                if inst:
+                    embed = format_instance_embed(inst, is_active_override=True)
+                    embed.title = f'✅ Instance Already Live: {instance}'
+                else:
+                    embed = discord.Embed(title=f'✅ Instance Already Live: {instance}', color=discord.Color.green())
+                embed.description = f"Instance **{instance}** is already active.\n🔗 [**Access Instance**]({url})"
+                await interaction.followup.send(embed=embed)
+                return
+
+            # Send initial progress message and register for continuous tracking
             switch_embed = discord.Embed(
                 title='🔄 Switching Active Instance...',
-                description=f"Switching license **{license_name}** to **{instance}**. This usually takes 10-20 seconds.",
+                description=f"Switching license **{license_name}** to **{instance}**. Checking active session state...",
                 color=discord.Color.blue()
             )
             switch_embed.add_field(name='Target', value=instance, inline=True)
-            switch_embed.set_footer(text='The Kratix pipeline is reconciling routes...')
+            switch_embed.set_footer(text='Reconciling license lease & routes...')
             
             msg = await interaction.followup.send(embed=switch_embed)
-            
-            # Poll for the license status to update (use_cache=False so we see Lease transitions immediately)
-            def check_active(lic):
-                return lic.get('status', {}).get('activeInstance') == instance
 
-            final_lic = await wait_for_resource_condition(
-                get_fn=lambda: k8s.get_foundry_license(license_name, use_cache=False),
-                check_fn=check_active,
-                timeout_seconds=60,
-                interval_seconds=5
+            await switch_tracker.register_pending(
+                bot=self.bot,
+                license_name=license_name,
+                namespace=inst_ns,
+                action='activate',
+                instance_name=instance,
+                user_id=str(interaction.user.id),
+                channel_id=interaction.channel_id,
+                message_id=msg.id,
+                webhook_msg=msg,
+                interaction=interaction,
             )
-            
-            if final_lic:
-                # Success! Now get the actual instance to show in the embed
-                inst_data = k8s.get_foundry_instance(instance)
-                if inst_data:
-                    embed = format_instance_embed(inst_data, is_active_override=True)
-                    embed.title = f'✅ Instance Live: {instance}'
-                    # Get baseDomain from license
-                    base_domain = final_lic.get('spec', {}).get('gateway', {}).get('baseDomain', 'k8s.orb.local')
-                    url = f"https://{instance}.{base_domain}"
-                    embed.description = f"Switch complete! The instance is now accessible.\n🔗 [**Access Instance**]({url})"
-                    await msg.edit(embed=embed)
-                else:
-                    await msg.edit(content=f"✅ Switch complete! Instance **{instance}** is now active.")
-            else:
-                # Check if the switch is queued waiting on active players (block mode)
-                latest_lic = k8s.get_foundry_license(license_name, use_cache=False) or {}
-                blocked_reason = latest_lic.get('status', {}).get('blockedReason')
-                current_holder = latest_lic.get('status', {}).get('activeInstance')
-                if blocked_reason:
-                    queued_embed = discord.Embed(
-                        title='⏳ Switch Queued (Waiting for Safe State)',
-                        description=(
-                            f"**{instance}** is queued to acquire license **{license_name}** as soon as "
-                            f"**{current_holder}** is safe to interrupt (no active players, downloads, or admin setup sessions).\n\n"
-                            f"**Reason:** {blocked_reason}"
-                        ),
-                        color=discord.Color.gold()
-                    )
-                    await msg.edit(embed=queued_embed)
-                else:
-                    # Timeout
-                    timeout_embed = discord.Embed(
-                        title='⚠️ Switch Taking Longer Than Expected',
-                        description=(
-                            f"The request to activate **{instance}** was sent, but the lease hasn't transferred yet. "
-                            "It should be ready shortly. Check `/vtt-status` in a moment."
-                        ),
-                        color=discord.Color.orange()
-                    )
-                    await msg.edit(embed=timeout_embed)
+
+            # Poll briskly for fast uncontested switches or immediate contention status;
+            # reconcile_license_messages continues tracking in the background until live.
+            for _ in range(8):
+                state = await switch_tracker.reconcile_license(self.bot, license_name, inst_ns)
+                if state in ('completed', 'superseded', 'queued'):
+                    return
+                await asyncio.sleep(3)
+
+            # One final check at 24s transitions 'switching' -> 'completing' (queued) so background loop pings on completion
+            await switch_tracker.reconcile_license(self.bot, license_name, inst_ns)
         else:
             embed = discord.Embed(
                 title='❌ Activation Failed',
@@ -158,7 +146,9 @@ class UpdateCog(commands.Cog):
     
     async def _handle_deactivate(self, interaction: discord.Interaction, instance: str):
         """Handle the deactivate action."""
-        result = k8s.deactivate_instance(instance)
+        inst = await asyncio.to_thread(k8s.get_foundry_instance, instance)
+        inst_ns = (inst or {}).get('metadata', {}).get('namespace') or k8s.FOUNDRY_NAMESPACE
+        result = await asyncio.to_thread(k8s.deactivate_instance, instance, inst_ns)
         
         if result['success']:
             license_name = result.get('license_name')
@@ -166,45 +156,44 @@ class UpdateCog(commands.Cog):
                 await interaction.followup.send(content=f"✅ {result['message']}")
                 return
 
-            # Send initial progress message
+            if result.get('already_inactive'):
+                standby_embed = discord.Embed(
+                    title='🟠 Instance Already on Standby',
+                    description=f"Instance **{instance}** is already on standby.",
+                    color=discord.Color.orange()
+                )
+                await interaction.followup.send(embed=standby_embed)
+                return
+
             deactivate_embed = discord.Embed(
                 title='🟠 Deactivating Instance...',
-                description=f"Deactivating **{instance}** from license **{license_name}**. This usually takes 10-20 seconds.",
+                description=f"Deactivating **{instance}** from license **{license_name}**. Checking active session state...",
                 color=discord.Color.orange()
             )
-            deactivate_embed.set_footer(text='The Kratix pipeline is reconciling routes...')
+            deactivate_embed.set_footer(text='Reconciling license lease & routes...')
             
             msg = await interaction.followup.send(embed=deactivate_embed)
-            
-            # Poll for the license status to update (use_cache=False so we see Lease release immediately)
-            def check_inactive(lic):
-                return lic.get('status', {}).get('activeInstance') != instance
 
-            final_lic = await wait_for_resource_condition(
-                get_fn=lambda: k8s.get_foundry_license(license_name, use_cache=False),
-                check_fn=check_inactive,
-                timeout_seconds=60,
-                interval_seconds=5
+            await switch_tracker.register_pending(
+                bot=self.bot,
+                license_name=license_name,
+                namespace=inst_ns,
+                action='deactivate',
+                instance_name=instance,
+                user_id=str(interaction.user.id),
+                channel_id=interaction.channel_id,
+                message_id=msg.id,
+                webhook_msg=msg,
+                interaction=interaction,
             )
-            
-            if final_lic:
-                success_embed = discord.Embed(
-                    title='🟠 Instance Standby',
-                    description=f"Instance **{instance}** is now on standby. Users will see the status page.",
-                    color=discord.Color.orange()
-                )
-                await msg.edit(embed=success_embed)
-            else:
-                # Timeout
-                timeout_embed = discord.Embed(
-                    title='⚠️ Deactivation Taking Longer Than Expected',
-                    description=(
-                        f"The request to deactivate **{instance}** was sent, but the routing hasn't updated yet. "
-                        "Check `/vtt-status` in a moment."
-                    ),
-                    color=discord.Color.orange()
-                )
-                await msg.edit(embed=timeout_embed)
+
+            for _ in range(8):
+                state = await switch_tracker.reconcile_license(self.bot, license_name, inst_ns)
+                if state in ('completed', 'superseded', 'queued'):
+                    return
+                await asyncio.sleep(3)
+
+            await switch_tracker.reconcile_license(self.bot, license_name, inst_ns)
         else:
             embed = discord.Embed(
                 title='❌ Deactivation Failed',
@@ -221,7 +210,7 @@ class UpdateCog(commands.Cog):
         interaction: discord.Interaction,
         current: str,
     ) -> List[app_commands.Choice[str]]:
-        """Autocomplete for instance names - shows all instances with status."""
+        """Autocomplete for instance names - shows all instances with live/queued/standby status."""
         try:
             instances = k8s.get_foundry_instances()
             if not instances:
@@ -230,16 +219,18 @@ class UpdateCog(commands.Cog):
             choices = []
             for inst in instances:
                 name = inst['metadata']['name']
-                # Filter by current input
                 if current.lower() in name.lower():
-                    # Add status indicator
                     license_name = inst.get('spec', {}).get('licenseRef', {}).get('name')
                     license_obj = k8s.get_foundry_license(license_name) if license_name else None
-                    is_active = False
+                    status_emoji = '🟠'
                     if license_obj:
-                        is_active = license_obj.get('spec', {}).get('activeInstanceName') == name
+                        active_name = (license_obj.get('status', {}).get('activeInstance') or '').strip()
+                        req_name = (license_obj.get('spec', {}).get('activeInstanceName') or '').strip()
+                        if active_name == name:
+                            status_emoji = '🟢'
+                        elif req_name == name:
+                            status_emoji = '⏳'
                     
-                    status_emoji = '🟢' if is_active else '🟠'
                     choices.append(app_commands.Choice(name=f'{status_emoji} {name}', value=name))
             
             return choices[:25]
