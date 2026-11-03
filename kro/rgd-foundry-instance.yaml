@@ -226,6 +226,15 @@ spec:
                   image: ${schema.spec.monitorImage}
                   imagePullPolicy: Always
                   command: ["python3", "-m", "foundry_lib.sidecar_monitor"]
+                  ports:
+                    - name: http-proxy
+                      containerPort: 8080
+                  readinessProbe:
+                    httpGet:
+                      path: /__platform/healthz
+                      port: 8080
+                    initialDelaySeconds: 2
+                    periodSeconds: 10
                   env:
                     - name: INSTANCE_NAME
                       value: ${schema.metadata.name}
@@ -281,7 +290,7 @@ spec:
           ports:
             - protocol: TCP
               port: 80
-              targetPort: 30000
+              targetPort: 8080
           type: ClusterIP
 
     # 7. HTTPRoute reactive to Lease holderIdentity

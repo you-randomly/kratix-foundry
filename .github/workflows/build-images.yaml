@@ -28,6 +28,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install test dependencies
+        run: pip install --no-cache-dir aiohttp
+
       - name: Run unit tests
         run: python3 -m unittest discover -s tests -v
 

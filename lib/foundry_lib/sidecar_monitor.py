@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import sys
@@ -15,6 +16,11 @@ from foundry_lib.activity import (
     parse_ss,
 )
 from foundry_lib.foundry_api import check_players
+from foundry_lib.presence import (
+    DEFAULT_ACK_SNOOZE_SECONDS,
+    DEFAULT_CHALLENGE_TIMEOUT_SECONDS,
+    PresenceCoordinator,
+)
 
 ANNOTATION_REQUESTED_INSTANCE = "foundry.platform/requested-instance"
 ANNOTATION_SWITCH_MODE = "foundry.platform/switch-mode"
@@ -119,6 +125,8 @@ def reconcile_lease(
     activity_eval: Optional[ActivityEvaluation] = None,
     is_scheduled_for_delete: bool = False,
     now: Optional[datetime] = None,
+    presence_coordinator: Optional[PresenceCoordinator] = None,
+    now_ts: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Coordinate the Kubernetes Lease for a FoundryLicense from the sidecar container.
@@ -127,7 +135,8 @@ def reconcile_lease(
       and the Lease is currently unheld or expired.
     - Renews the Lease while `instance_name` holds it and remains the requested instance.
     - Releases the Lease when another instance (or standby) is requested, respecting
-      `foundry.platform/switch-mode` (`block` waits for safe interrupt condition; `force` releases immediately).
+      `foundry.platform/switch-mode` (`block` waits for safe interrupt condition or
+      unacknowledged 90s presence challenge; `force` releases immediately).
     """
     now = _ensure_utc(now) or datetime.now(timezone.utc)
     lease = coordination_api.read_namespaced_lease(name=license_name, namespace=namespace)
@@ -148,6 +157,8 @@ def reconcile_lease(
     # Case 1: This instance currently holds the lease (and it hasn't expired)
     if current_holder == instance_name and not expired:
         if requested_instance == instance_name and not is_scheduled_for_delete:
+            if presence_coordinator and presence_coordinator.contention_kind in ("switch", "standby"):
+                presence_coordinator.clear_contention()
             # Renew lease
             lease.spec.renew_time = now
             annotations.pop(ANNOTATION_SWITCH_BLOCKED_REASON, None)
@@ -162,20 +173,28 @@ def reconcile_lease(
             }
 
         # Another instance (or standby) was requested, or this instance is scheduled for deletion
-        if activity_eval is not None:
-            should_block = (
-                not is_scheduled_for_delete
-                and switch_mode == "block"
-                and not activity_eval.is_safe
+        if is_scheduled_for_delete or switch_mode != "block":
+            should_block = False
+            reasons_text = ""
+            if presence_coordinator and presence_coordinator.contention_kind in ("switch", "standby"):
+                presence_coordinator.clear_contention()
+        elif presence_coordinator is not None and activity_eval is not None:
+            contention_kind = "switch" if requested_instance else "standby"
+            decision = presence_coordinator.evaluate_contention(
+                has_contention=True,
+                contention_kind=contention_kind,
+                target_instance=requested_instance,
+                activity_eval=activity_eval,
+                now=now_ts,
             )
+            should_block = not decision.should_interrupt
+            reasons_text = ", ".join(decision.reasons) if decision.reasons else "activity detected"
+        elif activity_eval is not None:
+            should_block = not activity_eval.is_safe
             reasons_text = ", ".join(activity_eval.reasons) if activity_eval.reasons else "activity detected"
         else:
             connected_players = stats.get("connectedPlayers", 0)
-            should_block = (
-                not is_scheduled_for_delete
-                and switch_mode == "block"
-                and connected_players != 0
-            )
+            should_block = connected_players != 0
             if connected_players > 0:
                 reasons_text = f"{connected_players} player(s) connected to '{instance_name}'"
             else:
@@ -197,7 +216,9 @@ def reconcile_lease(
                 "blockedReason": reason,
             }
 
-        # Safe to release lease (safe to interrupt, force mode, or scheduled for deletion)
+        # Safe to release lease (safe to interrupt, challenge expired, force mode, or scheduled for deletion)
+        if presence_coordinator and presence_coordinator.contention_kind in ("switch", "standby"):
+            presence_coordinator.mark_released(now_ts)
         lease.spec.holder_identity = ""
         lease.spec.renew_time = None
         annotations.pop(ANNOTATION_SWITCH_BLOCKED_REASON, None)
@@ -210,6 +231,10 @@ def reconcile_lease(
             "holder": "",
             "requested": requested_instance,
         }
+
+    # Not holding lease: clear any stale switch/standby contention on this instance
+    if presence_coordinator and presence_coordinator.contention_kind in ("switch", "standby"):
+        presence_coordinator.clear_contention()
 
     # Case 2: This instance is requested to become active and does not currently hold a valid lease
     if requested_instance == instance_name and not is_scheduled_for_delete:
@@ -247,7 +272,189 @@ def reconcile_lease(
     }
 
 
-def monitor_loop():
+def _run_monitor_iteration(
+    *,
+    custom_api: Any,
+    coordination_api: Any,
+    apps_api: Any,
+    namespace: str,
+    instance_name: str,
+    license_name: Optional[str],
+    admin_key_path: str,
+    startup_admin_key: str,
+    deployment_name: str,
+    session_tracker: SessionTracker,
+    download_tracker: DownloadTracker,
+    http_session: requests.Session,
+    presence_coordinator: PresenceCoordinator,
+) -> None:
+    now_ts = time.time()
+
+    # 1. Read FoundryInstance metadata & spec
+    instance_obj = custom_api.get_namespaced_custom_object(
+        group="foundry.platform",
+        version="v1alpha1",
+        namespace=namespace,
+        plural="foundryinstances",
+        name=instance_name,
+    )
+    inst_annotations = instance_obj.get("metadata", {}).get("annotations", {}) or {}
+    is_scheduled_for_delete = bool(inst_annotations.get(ANNOTATION_SCHEDULED_DELETE))
+    resolved_license_name = license_name or (
+        instance_obj.get("spec", {}).get("licenseRef", {}).get("name")
+    )
+
+    # 2. Check Players & World State (Localhost:30000) using persistent session
+    current_admin_key = ""
+    if os.path.exists(admin_key_path):
+        with open(admin_key_path, "r") as f:
+            current_admin_key = f.read().strip()
+        stats = check_players("localhost:30000", admin_key=current_admin_key, session=http_session)
+    else:
+        stats = {
+            "active": False,
+            "connectedPlayers": -1,
+            "worldActive": False,
+            "worldName": None,
+            "checkedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "error": "Admin key secret not mounted yet",
+        }
+
+    # 3. Evaluate Network & Session Activity
+    activity_eval = inspect_activity(
+        session_tracker=session_tracker,
+        download_tracker=download_tracker,
+        now_ts=now_ts,
+        stats=stats,
+    )
+    presence_coordinator.connected_players = activity_eval.connected_players
+
+    # 4. Reconcile License Lease first so releasing a lease happens before any pod restart
+    lease_result: Dict[str, Any] = {"isActive": False, "action": "skipped"}
+    if resolved_license_name:
+        try:
+            lease_result = reconcile_lease(
+                coordination_api=coordination_api,
+                instance_name=instance_name,
+                license_name=resolved_license_name,
+                namespace=namespace,
+                stats=stats,
+                activity_eval=activity_eval,
+                is_scheduled_for_delete=is_scheduled_for_delete,
+                presence_coordinator=presence_coordinator,
+                now_ts=now_ts,
+            )
+            print(
+                f"Lease reconcile [{resolved_license_name}]: action={lease_result['action']}, "
+                f"holder='{lease_result.get('holder')}', requested='{lease_result.get('requested')}'",
+                flush=True,
+            )
+        except Exception as lease_err:
+            print(f"Error reconciling lease '{resolved_license_name}': {lease_err}", flush=True)
+
+    # 5. Check for Password Rotation and Rollout if Safe (or challenge expired)
+    password_rotation_pending = bool(
+        startup_admin_key and current_admin_key and startup_admin_key != current_admin_key
+    )
+    pw_reasons: List[str] = []
+    if password_rotation_pending:
+        if lease_result.get("action") == "blocked_release":
+            print(
+                f"Admin password rotation also pending for '{instance_name}', "
+                "deferring until license switch contention resolves.",
+                flush=True,
+            )
+        else:
+            pw_decision = presence_coordinator.evaluate_contention(
+                has_contention=True,
+                contention_kind="password_reset",
+                target_instance=instance_name,
+                activity_eval=activity_eval,
+                now=now_ts,
+            )
+            if pw_decision.should_interrupt:
+                print(
+                    f"Admin password rotation detected on '{instance_name}' and safe to interrupt "
+                    f"(state={pw_decision.state}). Triggering rollout restart for '{deployment_name}'...",
+                    flush=True,
+                )
+                restart_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                patch_body = {
+                    "spec": {
+                        "template": {
+                            "metadata": {
+                                "annotations": {
+                                    "foundry.platform/restartedAt": restart_time
+                                }
+                            }
+                        }
+                    }
+                }
+                try:
+                    apps_api.patch_namespaced_deployment(
+                        name=deployment_name,
+                        namespace=namespace,
+                        body=patch_body,
+                    )
+                    presence_coordinator.mark_released(now_ts)
+                    print(f"Successfully triggered rollout restart of '{deployment_name}' at {restart_time}.", flush=True)
+                    return
+                except Exception as deploy_err:
+                    print(f"Error triggering deployment restart: {deploy_err}", flush=True)
+            else:
+                pw_reasons = pw_decision.reasons
+                print(
+                    f"Admin password rotation pending for '{instance_name}', waiting: {pw_reasons}",
+                    flush=True,
+                )
+    elif lease_result.get("action") != "blocked_release":
+        presence_coordinator.clear_contention()
+
+    # 6. Update FoundryInstance Status & Activity Annotation
+    body = {
+        "status": {
+            "isActive": lease_result.get("isActive", False),
+            "connectedPlayers": stats.get("connectedPlayers", 0),
+            "activeWorld": stats.get("worldName"),
+            "worldActive": stats.get("worldActive", False),
+            "lastSidecarUpdate": stats.get("checkedAt"),
+            "error": stats.get("error"),
+        }
+    }
+
+    custom_api.patch_namespaced_custom_object_status(
+        group="foundry.platform",
+        version="v1alpha1",
+        namespace=namespace,
+        plural="foundryinstances",
+        name=instance_name,
+        body=body,
+    )
+
+    summary_parts = list(activity_eval.reasons)
+    for extra in pw_reasons:
+        if extra not in summary_parts:
+            summary_parts.append(extra)
+    activity_summary = ", ".join(summary_parts) if summary_parts else "idle"
+    if inst_annotations.get(ANNOTATION_INSTANCE_ACTIVITY) != activity_summary:
+        annot_patch = {
+            "metadata": {
+                "annotations": {
+                    ANNOTATION_INSTANCE_ACTIVITY: activity_summary
+                }
+            }
+        }
+        custom_api.patch_namespaced_custom_object(
+            group="foundry.platform",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="foundryinstances",
+            name=instance_name,
+            body=annot_patch,
+        )
+
+
+async def async_monitor_main() -> None:
     namespace = os.getenv("POD_NAMESPACE", "default")
     instance_name = os.getenv("INSTANCE_NAME")
     license_name = os.getenv("LICENSE_NAME")
@@ -258,13 +465,21 @@ def monitor_loop():
     idle_threshold = float(os.getenv("SETUP_IDLE_SECONDS", "300"))
     max_heartbeat_bps = float(os.getenv("MAX_HEARTBEAT_BPS", "5.0"))
     settle_seconds = float(os.getenv("DOWNLOAD_SETTLE_SECONDS", "60"))
+    proxy_port = int(os.getenv("PROXY_LISTEN_PORT", "8080"))
+    upstream_url = os.getenv("FOUNDRY_UPSTREAM_URL", "http://127.0.0.1:30000")
+    challenge_timeout = float(
+        os.getenv("CHALLENGE_TIMEOUT_SECONDS", str(DEFAULT_CHALLENGE_TIMEOUT_SECONDS))
+    )
+    ack_snooze = float(
+        os.getenv("ACK_SNOOZE_SECONDS", str(DEFAULT_ACK_SNOOZE_SECONDS))
+    )
 
     if not instance_name:
         print("FATAL: INSTANCE_NAME env var not set", flush=True)
         sys.exit(1)
 
     print(
-        f"Starting lease, status & activity monitor for instance='{instance_name}' "
+        f"Starting lease, proxy (:{proxy_port} -> {upstream_url}) & activity monitor for instance='{instance_name}' "
         f"(deployment='{deployment_name}', license='{license_name or 'auto'}') in namespace='{namespace}'...",
         flush=True,
     )
@@ -284,151 +499,74 @@ def monitor_loop():
     )
     download_tracker = DownloadTracker(settle_seconds=settle_seconds)
     http_session = requests.Session()
+    presence_coordinator = PresenceCoordinator(
+        instance_name=instance_name,
+        challenge_timeout_seconds=challenge_timeout,
+        ack_snooze_seconds=ack_snooze,
+    )
 
-    while True:
-        try:
-            now_ts = time.time()
+    loop = asyncio.get_running_loop()
+    wake_event = asyncio.Event()
 
-            # 1. Read FoundryInstance metadata & spec
-            instance_obj = custom_api.get_namespaced_custom_object(
-                group="foundry.platform",
-                version="v1alpha1",
-                namespace=namespace,
-                plural="foundryinstances",
-                name=instance_name,
-            )
-            inst_annotations = instance_obj.get("metadata", {}).get("annotations", {}) or {}
-            is_scheduled_for_delete = bool(inst_annotations.get(ANNOTATION_SCHEDULED_DELETE))
-            resolved_license_name = license_name or (
-                instance_obj.get("spec", {}).get("licenseRef", {}).get("name")
-            )
+    def trigger_wake() -> None:
+        loop.call_soon_threadsafe(wake_event.set)
 
-            # 2. Check Players & World State (Localhost:30000) using persistent session
-            current_admin_key = ""
-            if os.path.exists(admin_key_path):
-                with open(admin_key_path, "r") as f:
-                    current_admin_key = f.read().strip()
-                stats = check_players("localhost:30000", admin_key=current_admin_key, session=http_session)
-            else:
-                stats = {
-                    "active": False,
-                    "connectedPlayers": -1,
-                    "worldActive": False,
-                    "worldName": None,
-                    "checkedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "error": "Admin key secret not mounted yet",
-                }
+    # Start reverse proxy server
+    from aiohttp import web
+    from foundry_lib.proxy import create_proxy_app
 
-            # 3. Evaluate Network & Session Activity
-            activity_eval = inspect_activity(
-                session_tracker=session_tracker,
-                download_tracker=download_tracker,
-                now_ts=now_ts,
-                stats=stats,
-            )
+    app = create_proxy_app(
+        coordinator=presence_coordinator,
+        upstream_url=upstream_url,
+        on_state_change=trigger_wake,
+    )
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", proxy_port)
+    await site.start()
+    print(f"Reverse proxy listening on 0.0.0.0:{proxy_port} -> {upstream_url}", flush=True)
 
-            # 4. Check for Password Rotation and Rollout if Safe
-            if startup_admin_key and current_admin_key and startup_admin_key != current_admin_key:
-                if activity_eval.is_safe:
-                    print(
-                        f"Admin password rotation detected on '{instance_name}' and instance is safe to interrupt. "
-                        f"Triggering rollout restart for deployment '{deployment_name}'...",
-                        flush=True,
-                    )
-                    restart_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-                    patch_body = {
-                        "spec": {
-                            "template": {
-                                "metadata": {
-                                    "annotations": {
-                                        "foundry.platform/restartedAt": restart_time
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    try:
-                        apps_api.patch_namespaced_deployment(
-                            name=deployment_name,
-                            namespace=namespace,
-                            body=patch_body,
-                        )
-                        print(f"Successfully triggered rollout restart of '{deployment_name}' at {restart_time}.", flush=True)
-                        time.sleep(poll_interval)
-                        continue
-                    except Exception as deploy_err:
-                        print(f"Error triggering deployment restart: {deploy_err}", flush=True)
-                else:
-                    print(
-                        f"Admin password rotation pending for '{instance_name}', waiting for safe state: {activity_eval.reasons}",
-                        flush=True,
-                    )
-
-            # 5. Reconcile License Lease
-            lease_result = {"isActive": False, "action": "skipped"}
-            if resolved_license_name:
-                try:
-                    lease_result = reconcile_lease(
-                        coordination_api=coordination_api,
-                        instance_name=instance_name,
-                        license_name=resolved_license_name,
-                        namespace=namespace,
-                        stats=stats,
-                        activity_eval=activity_eval,
-                        is_scheduled_for_delete=is_scheduled_for_delete,
-                    )
-                    print(
-                        f"Lease reconcile [{resolved_license_name}]: action={lease_result['action']}, "
-                        f"holder='{lease_result.get('holder')}', requested='{lease_result.get('requested')}'",
-                        flush=True,
-                    )
-                except Exception as lease_err:
-                    print(f"Error reconciling lease '{resolved_license_name}': {lease_err}", flush=True)
-
-            # 6. Update FoundryInstance Status & Activity Annotation
-            body = {
-                "status": {
-                    "isActive": lease_result.get("isActive", False),
-                    "connectedPlayers": stats.get("connectedPlayers", 0),
-                    "activeWorld": stats.get("worldName"),
-                    "worldActive": stats.get("worldActive", False),
-                    "lastSidecarUpdate": stats.get("checkedAt"),
-                    "error": stats.get("error"),
-                }
-            }
-
-            custom_api.patch_namespaced_custom_object_status(
-                group="foundry.platform",
-                version="v1alpha1",
-                namespace=namespace,
-                plural="foundryinstances",
-                name=instance_name,
-                body=body,
-            )
-
-            # Publish activity description to annotations if changed
-            activity_summary = ", ".join(activity_eval.reasons) if activity_eval.reasons else "idle"
-            if inst_annotations.get(ANNOTATION_INSTANCE_ACTIVITY) != activity_summary:
-                annot_patch = {
-                    "metadata": {
-                        "annotations": {
-                            ANNOTATION_INSTANCE_ACTIVITY: activity_summary
-                        }
-                    }
-                }
-                custom_api.patch_namespaced_custom_object(
-                    group="foundry.platform",
-                    version="v1alpha1",
+    try:
+        while True:
+            try:
+                await asyncio.to_thread(
+                    _run_monitor_iteration,
+                    custom_api=custom_api,
+                    coordination_api=coordination_api,
+                    apps_api=apps_api,
                     namespace=namespace,
-                    plural="foundryinstances",
-                    name=instance_name,
-                    body=annot_patch,
+                    instance_name=instance_name,
+                    license_name=license_name,
+                    admin_key_path=admin_key_path,
+                    startup_admin_key=startup_admin_key,
+                    deployment_name=deployment_name,
+                    session_tracker=session_tracker,
+                    download_tracker=download_tracker,
+                    http_session=http_session,
+                    presence_coordinator=presence_coordinator,
                 )
+            except Exception as e:
+                print(f"Error in monitor loop: {str(e)}", flush=True)
 
-        except Exception as e:
-            print(f"Error in monitor loop: {str(e)}", flush=True)
+            wait_secs = float(poll_interval)
+            if (
+                presence_coordinator.challenge_deadline is not None
+                and presence_coordinator.snoozed_until is None
+            ):
+                rem = presence_coordinator.challenge_deadline - time.time()
+                wait_secs = min(wait_secs, max(0.1, rem + 0.2))
 
-        time.sleep(poll_interval)
+            try:
+                await asyncio.wait_for(wake_event.wait(), timeout=wait_secs)
+            except asyncio.TimeoutError:
+                pass
+            wake_event.clear()
+    finally:
+        await runner.cleanup()
+
+
+def monitor_loop() -> None:
+    asyncio.run(async_monitor_main())
 
 
 if __name__ == "__main__":
