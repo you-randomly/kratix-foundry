@@ -753,14 +753,26 @@ def activate_instance(instance_name: str, namespace: str = None) -> Dict[str, An
     license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
     if not license_name:
         return {'success': False, 'message': f'Instance "{instance_name}" has no licenseRef'}
-    license_obj = get_foundry_license(license_name, ns)
+    license_obj = get_foundry_license(license_name, ns, use_cache=False)
     if not license_obj:
         return {'success': False, 'message': f'License "{license_name}" not found'}
 
-    # Check if already active
-    is_active = license_obj.get('spec', {}).get('activeInstanceName') == instance_name
-    if is_active:
-        return {'success': True, 'message': f'Instance "{instance_name}" is already active', 'license_name': license_name}
+    # Check if already requested and active
+    spec_active = license_obj.get('spec', {}).get('activeInstanceName') == instance_name
+    status_active = license_obj.get('status', {}).get('activeInstance') == instance_name
+    if spec_active and status_active:
+        return {
+            'success': True,
+            'message': f'Instance "{instance_name}" is already active',
+            'license_name': license_name,
+            'already_active': True,
+        }
+    if spec_active:
+        return {
+            'success': True,
+            'message': f'Instance "{instance_name}" is already queued to become active',
+            'license_name': license_name,
+        }
     
     # Patch the license to set activeInstanceName
     try:
@@ -777,6 +789,8 @@ def activate_instance(instance_name: str, namespace: str = None) -> Dict[str, An
             name=license_name,
             body=patch_body
         )
+        licenses_cache.invalidate(license_name)
+        licenses_list_cache.clear()
         return {
             'success': True, 
             'message': f'Activated "{instance_name}" via license "{license_name}"',
@@ -814,20 +828,26 @@ def deactivate_instance(instance_name: str, namespace: Optional[str] = None) -> 
     license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
     if not license_name:
         return {'success': False, 'message': f'Instance "{instance_name}" has no licenseRef'}
-    license_obj = get_foundry_license(license_name, ns)
+    license_obj = get_foundry_license(license_name, ns, use_cache=False)
     if not license_obj:
         return {'success': False, 'message': f'License "{license_name}" not found'}
 
     # Check if already inactive
-    current_active = license_obj.get('spec', {}).get('activeInstanceName')
+    current_active = (license_obj.get('spec', {}).get('activeInstanceName') or '').strip()
+    status_active = (license_obj.get('status', {}).get('activeInstance') or '').strip()
     if current_active != instance_name:
-        return {'success': True, 'message': f'Instance "{instance_name}" is not currently active', 'license_name': license_name}
+        return {
+            'success': True,
+            'message': f'Instance "{instance_name}" is not currently active',
+            'license_name': license_name,
+            'already_inactive': status_active != instance_name,
+        }
     
-    # Use merge patch with None to remove the activeInstanceName field
+    # Set activeInstanceName to empty string (matches CRD default="")
     try:
         patch_body = {
             'spec': {
-                'activeInstanceName': None  # None/null removes the field in merge patch
+                'activeInstanceName': ''
             }
         }
         k8s_api.patch_namespaced_custom_object(
@@ -838,6 +858,8 @@ def deactivate_instance(instance_name: str, namespace: Optional[str] = None) -> 
             name=license_name,
             body=patch_body
         )
+        licenses_cache.invalidate(license_name)
+        licenses_list_cache.clear()
         return {
             'success': True, 
             'message': f'Deactivated "{instance_name}" - all instances now on standby',
@@ -918,6 +940,33 @@ def patch_instance_annotations(name: str, annotations: Dict[str, Any], namespace
     except ApiException as e:
         error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
         return {'success': False, 'message': f'Failed to patch annotations: {error_msg}'}
+
+
+def annotate_foundry_license(name: str, annotations: Dict[str, Any], namespace: Optional[str] = None) -> Dict[str, Any]:
+    """Patch annotations on a FoundryLicense resource (use None value to remove an annotation)."""
+    if not k8s_api:
+        return {'success': False, 'message': 'Kubernetes not connected'}
+
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        patch_body = {
+            'metadata': {
+                'annotations': annotations
+            }
+        }
+        k8s_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural=CRD_LICENSE_PLURAL,
+            name=name,
+            body=patch_body
+        )
+        licenses_cache.invalidate(name)
+        return {'success': True, 'message': f'Updated annotations on FoundryLicense "{name}"'}
+    except ApiException as e:
+        error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
+        return {'success': False, 'message': f'Failed to annotate FoundryLicense: {error_msg}'}
 
 
 POD_EXEC_TIMEOUT_SECONDS = 5

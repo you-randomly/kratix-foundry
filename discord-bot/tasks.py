@@ -13,6 +13,7 @@ import discord
 
 from config import ANNOTATION_SCHEDULED_DELETE
 import k8s_client as k8s
+from switch_tracker import switch_tracker
 
 
 @tasks.loop(hours=1)
@@ -249,3 +250,12 @@ async def check_password_notifications(bot):
                 
     except Exception as e:
         print(f"Error in check_password_notifications: {e}")
+
+
+@tasks.loop(seconds=8)
+async def reconcile_license_messages(bot):
+    """Background task to keep /vtt-update Discord messages synchronized with license transitions."""
+    try:
+        await switch_tracker.reconcile_all(bot)
+    except Exception as e:
+        print(f"Error in reconcile_license_messages: {e}")
