@@ -103,16 +103,18 @@ def parse_ss(output: str) -> List[ConnectionInfo]:
     return connections
 
 class SessionTracker:
-    """Tracks inbound browser connections to port 30000 over time."""
+    """Tracks inbound browser connections to Foundry/proxy ports over time."""
     def __init__(
         self,
         idle_threshold_seconds: float = 300.0,
         max_heartbeat_rate_bps: float = 5.0,
         quiet_socket_seconds: float = 60.0,
+        inbound_ports: Tuple[int, ...] = (30000, 8080),
     ):
         self.idle_threshold_seconds = idle_threshold_seconds
         self.max_heartbeat_rate_bps = max_heartbeat_rate_bps  # 5.0 B/s headroom above Socket.IO ping/pong
         self.quiet_socket_seconds = quiet_socket_seconds
+        self.inbound_ports = inbound_ports
         # Map of (remote_ip, remote_port) -> {first_seen, last_seen, samples: list of (time, bytes_received)}
         self.sessions: Dict[Tuple[str, int], Dict] = {}
 
@@ -124,7 +126,7 @@ class SessionTracker:
         current_keys = set()
         lastrcv_by_key: Dict[Tuple[str, int], int] = {}
         for conn in inbound_conns:
-            if conn.local_port != 30000 or conn.state != "ESTAB":
+            if conn.local_port not in self.inbound_ports or conn.state != "ESTAB":
                 continue
             # Exclude loopback
             if conn.remote_ip in ("127.0.0.1", "::1", "localhost"):
@@ -228,7 +230,7 @@ class DownloadTracker:
         current_keys = set()
         
         for conn in outbound_conns:
-            if conn.local_port == 30000:
+            if conn.local_port in (30000, 8080):
                 continue  # Inbound
             if not is_public_ip(conn.remote_ip):
                 continue  # In-cluster or private

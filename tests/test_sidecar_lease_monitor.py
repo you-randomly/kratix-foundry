@@ -16,6 +16,7 @@ sys.modules.setdefault("kubernetes.config", MagicMock())
 sys.modules.setdefault("requests", MagicMock())
 
 from foundry_lib.activity import ActivityEvaluation
+from foundry_lib.presence import PresenceCoordinator
 from foundry_lib.sidecar_monitor import (
     ANNOTATION_REQUESTED_INSTANCE,
     ANNOTATION_SWITCH_BLOCKED_REASON,
@@ -288,6 +289,92 @@ class TestSidecarLeaseMonitor(unittest.TestCase):
         self.assertEqual(result["action"], "released")
         self.assertFalse(result["isActive"])
         self.assertEqual(lease.spec.holder_identity, "")
+
+    def test_presence_challenge_blocks_then_releases_after_unacknowledged_timeout(self):
+        earlier = self.now - timedelta(seconds=15)
+        lease = make_lease(
+            holder_identity="instance-a",
+            requested_instance="instance-b",
+            switch_mode="block",
+            renew_time=earlier,
+        )
+        self.coord_api.read_namespaced_lease.return_value = lease
+
+        presence = PresenceCoordinator(
+            instance_name="instance-a",
+            challenge_timeout_seconds=90.0,
+            ack_snooze_seconds=900.0,
+        )
+        presence.record_tab_heartbeat("tab-1", now=1000.0)
+        activity = ActivityEvaluation(
+            is_safe=False,
+            reasons=["2 player(s) in world"],
+            connected_players=2,
+            world_active=True,
+        )
+
+        # Initial contention starts 90s challenge
+        r1 = reconcile_lease(
+            coordination_api=self.coord_api,
+            instance_name="instance-a",
+            license_name="main-license",
+            namespace="foundry-vtt",
+            stats={"connectedPlayers": 2},
+            activity_eval=activity,
+            now=self.now,
+            presence_coordinator=presence,
+            now_ts=1000.0,
+        )
+        self.assertEqual(r1["action"], "blocked_release")
+        self.assertIn("awaiting user confirmation", r1["blockedReason"])
+
+        # User clicks "I'm still here" at t=1020 -> snoozes for 15m
+        presence.acknowledge(now=1020.0)
+        r2 = reconcile_lease(
+            coordination_api=self.coord_api,
+            instance_name="instance-a",
+            license_name="main-license",
+            namespace="foundry-vtt",
+            stats={"connectedPlayers": 2},
+            activity_eval=activity,
+            now=self.now,
+            presence_coordinator=presence,
+            now_ts=1025.0,
+        )
+        self.assertEqual(r2["action"], "blocked_release")
+        self.assertIn("active session confirmed", r2["blockedReason"])
+
+        # 15m snooze expires at t=1920 -> starts new 90s challenge
+        r3 = reconcile_lease(
+            coordination_api=self.coord_api,
+            instance_name="instance-a",
+            license_name="main-license",
+            namespace="foundry-vtt",
+            stats={"connectedPlayers": 2},
+            activity_eval=activity,
+            now=self.now,
+            presence_coordinator=presence,
+            now_ts=1920.0,
+        )
+        self.assertEqual(r3["action"], "blocked_release")
+        self.assertIn("awaiting user confirmation", r3["blockedReason"])
+
+        # Nobody responds for 90s (t=2010) -> lease releases cleanly despite idle in-world players
+        r4 = reconcile_lease(
+            coordination_api=self.coord_api,
+            instance_name="instance-a",
+            license_name="main-license",
+            namespace="foundry-vtt",
+            stats={"connectedPlayers": 2},
+            activity_eval=activity,
+            now=self.now,
+            presence_coordinator=presence,
+            now_ts=2010.0,
+        )
+        self.assertEqual(r4["action"], "released")
+        self.assertFalse(r4["isActive"])
+        self.assertEqual(lease.spec.holder_identity, "")
+        self.assertTrue(presence.get_status(2011.0)["expired"])
 
 
 if __name__ == "__main__":
