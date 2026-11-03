@@ -24,7 +24,7 @@ spec:
       proxyPort: integer | default=443
       adminPasswordSecretRef:
         name: string | default="" description="Secret containing adminPassword key"
-      monitorImage: string | default="ghcr.io/you-randomly/kratix-foundry/instance-pipeline:latest"
+      monitorImage: string | default="ghcr.io/you-randomly/kratix-foundry/sidecar:latest"
     status:
       phase: '${deployment.status.availableReplicas > 0 ? "Ready" : "Pending"}'
       isActive: '${has(licenseLease.spec.holderIdentity) && licenseLease.spec.holderIdentity == schema.metadata.name}'
@@ -224,6 +224,7 @@ spec:
                       mountPath: /data
                 - name: monitor
                   image: ${schema.spec.monitorImage}
+                  imagePullPolicy: Always
                   command: ["python3", "-m", "foundry_lib.sidecar_monitor"]
                   env:
                     - name: INSTANCE_NAME

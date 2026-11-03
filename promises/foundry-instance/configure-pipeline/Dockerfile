@@ -1,7 +1,9 @@
 FROM python:3.12-slim
 
-# Install dependencies
-RUN pip install --no-cache-dir kratix-sdk kubernetes pyyaml requests
+# Install iproute2 (for ss socket inspection) and Python dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir kratix-sdk kubernetes pyyaml requests
 
 # App structure
 WORKDIR /app

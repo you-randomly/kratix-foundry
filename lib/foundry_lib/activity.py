@@ -104,9 +104,15 @@ def parse_ss(output: str) -> List[ConnectionInfo]:
 
 class SessionTracker:
     """Tracks inbound browser connections to port 30000 over time."""
-    def __init__(self, idle_threshold_seconds: float = 300.0, max_heartbeat_rate_bps: float = 1.0):
+    def __init__(
+        self,
+        idle_threshold_seconds: float = 300.0,
+        max_heartbeat_rate_bps: float = 5.0,
+        quiet_socket_seconds: float = 60.0,
+    ):
         self.idle_threshold_seconds = idle_threshold_seconds
-        self.max_heartbeat_rate_bps = max_heartbeat_rate_bps  # 1.0 byte/s max for heartbeat
+        self.max_heartbeat_rate_bps = max_heartbeat_rate_bps  # 5.0 B/s headroom above Socket.IO ping/pong
+        self.quiet_socket_seconds = quiet_socket_seconds
         # Map of (remote_ip, remote_port) -> {first_seen, last_seen, samples: list of (time, bytes_received)}
         self.sessions: Dict[Tuple[str, int], Dict] = {}
 
@@ -116,6 +122,7 @@ class SessionTracker:
         Returns: (active_count, idle_count)
         """
         current_keys = set()
+        lastrcv_by_key: Dict[Tuple[str, int], int] = {}
         for conn in inbound_conns:
             if conn.local_port != 30000 or conn.state != "ESTAB":
                 continue
@@ -125,6 +132,7 @@ class SessionTracker:
                 
             key = (conn.remote_ip, conn.remote_port)
             current_keys.add(key)
+            lastrcv_by_key[key] = conn.lastrcv
             
             if key not in self.sessions:
                 self.sessions[key] = {
@@ -146,10 +154,28 @@ class SessionTracker:
                 
         active_count = 0
         idle_count = 0
+        quiet_ms = self.quiet_socket_seconds * 1000.0
         
         for key, sess in self.sessions.items():
             first_seen = sess["first_seen"]
             duration = now - first_seen
+            samples = sess["samples"]
+
+            # Pooled gateway HTTP/1.1 keep-alive sockets receive 0 bytes after the initial request
+            # (not even 25s WebSocket heartbeats). Treat completely silent sockets as idle early.
+            if quiet_ms > 0 and lastrcv_by_key.get(key, 0) >= quiet_ms:
+                idle_count += 1
+                continue
+            if self.quiet_socket_seconds > 0 and len(samples) >= 2:
+                quiet_start = now - self.quiet_socket_seconds
+                quiet_samples = [s for s in samples if s[0] >= quiet_start]
+                if (
+                    len(quiet_samples) >= 2
+                    and (quiet_samples[-1][0] - quiet_samples[0][0]) >= self.quiet_socket_seconds
+                    and (quiet_samples[-1][1] - quiet_samples[0][1]) == 0
+                ):
+                    idle_count += 1
+                    continue
             
             # If session is newer than the idle threshold, consider it active
             if duration < self.idle_threshold_seconds:
@@ -157,7 +183,6 @@ class SessionTracker:
                 continue
                 
             # For sessions older than idle threshold, examine traffic rate over the window
-            samples = sess["samples"]
             window_start = now - self.idle_threshold_seconds
             relevant_samples = [s for s in samples if s[0] >= window_start]
             if len(relevant_samples) >= 2:
@@ -180,10 +205,19 @@ class SessionTracker:
 
 class DownloadTracker:
     """Tracks outbound connections to public IPs for package downloads."""
-    def __init__(self, settle_seconds: float = 60.0):
+    def __init__(
+        self,
+        settle_seconds: float = 60.0,
+        min_download_bytes_delta: int = 4096,
+        min_initial_bytes: int = 32768,
+        initial_active_lastrcv_ms: int = 5000,
+    ):
         self.settle_seconds = settle_seconds
+        self.min_download_bytes_delta = min_download_bytes_delta
+        self.min_initial_bytes = min_initial_bytes
+        self.initial_active_lastrcv_ms = initial_active_lastrcv_ms
         self.last_download_time: Optional[float] = None
-        self.prev_outbound_bytes: Dict[Tuple[str, int], int] = {}
+        self.prev_outbound_bytes: Dict[Tuple[str, int, str, int], int] = {}
 
     def update(self, outbound_conns: List[ConnectionInfo], now: float) -> Tuple[bool, bool]:
         """
@@ -201,14 +235,22 @@ class DownloadTracker:
             if conn.remote_port not in (80, 443):
                 continue
                 
-            key = (conn.remote_ip, conn.remote_port)
+            key = (conn.local_ip, conn.local_port, conn.remote_ip, conn.remote_port)
             current_keys.add(key)
             prev = self.prev_outbound_bytes.get(key)
             self.prev_outbound_bytes[key] = conn.bytes_received
             
-            # If ESTAB and bytes are flowing, download is active
+            # Only treat ESTAB sockets as actively downloading when bytes are actually flowing,
+            # so idle HTTPS keep-alive sockets with high cumulative bytes_received do not stick.
             if conn.state == "ESTAB":
-                if prev is None or conn.bytes_received > prev or conn.bytes_received > 50000:
+                if prev is None:
+                    is_flowing = (
+                        conn.bytes_received >= self.min_initial_bytes
+                        and conn.lastrcv < self.initial_active_lastrcv_ms
+                    )
+                else:
+                    is_flowing = (conn.bytes_received - prev) >= self.min_download_bytes_delta
+                if is_flowing:
                     active_downloading = True
                     self.last_download_time = now
                     

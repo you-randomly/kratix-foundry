@@ -67,6 +67,7 @@ def run_ss_probe() -> Optional[str]:
         )
         if res.returncode == 0:
             return res.stdout
+        print(f"WARN: ss probe exited with {res.returncode}: {res.stderr.strip()}", flush=True)
     except Exception as e:
         print(f"WARN: ss probe failed: {e}", flush=True)
     return None
@@ -255,6 +256,7 @@ def monitor_loop():
     deployment_name = os.getenv("DEPLOYMENT_NAME", f"foundry-{instance_name}")
     poll_interval = int(os.getenv("POLL_INTERVAL_SECONDS", str(DEFAULT_POLL_INTERVAL_SECONDS)))
     idle_threshold = float(os.getenv("SETUP_IDLE_SECONDS", "300"))
+    max_heartbeat_bps = float(os.getenv("MAX_HEARTBEAT_BPS", "5.0"))
     settle_seconds = float(os.getenv("DOWNLOAD_SETTLE_SECONDS", "60"))
 
     if not instance_name:
@@ -276,7 +278,10 @@ def monitor_loop():
     coordination_api = client.CoordinationV1Api()
     apps_api = client.AppsV1Api()
 
-    session_tracker = SessionTracker(idle_threshold_seconds=idle_threshold)
+    session_tracker = SessionTracker(
+        idle_threshold_seconds=idle_threshold,
+        max_heartbeat_rate_bps=max_heartbeat_bps,
+    )
     download_tracker = DownloadTracker(settle_seconds=settle_seconds)
     http_session = requests.Session()
 

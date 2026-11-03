@@ -155,6 +155,59 @@ class TestActivity(unittest.TestCase):
         self.assertFalse(downloading)
         self.assertFalse(settling)
 
+    def test_download_tracker_idle_keepalive_does_not_stick(self):
+        tracker = DownloadTracker(settle_seconds=60.0)
+        t0 = 1000.0
+
+        # Pre-existing idle HTTPS keep-alive socket (last packet 25s ago) should not trigger at t0
+        stale_keepalive = ConnectionInfo(
+            local_ip="10.244.3.24", local_port=41001,
+            remote_ip="162.159.133.234", remote_port=443,
+            state="ESTAB", bytes_received=361257, lastrcv=25000,
+        )
+        downloading, settling = tracker.update([stale_keepalive], now=t0)
+        self.assertFalse(downloading)
+        self.assertFalse(settling)
+
+        # Active download socket (fresh traffic, lastrcv=100ms) triggers at t0+15, then stays ESTAB idle
+        active_then_idle = ConnectionInfo(
+            local_ip="10.244.3.24", local_port=41002,
+            remote_ip="162.159.133.234", remote_port=443,
+            state="ESTAB", bytes_received=200000, lastrcv=100,
+        )
+        downloading, settling = tracker.update([stale_keepalive, active_then_idle], now=t0 + 15.0)
+        self.assertTrue(downloading)
+
+        # Next poll at t0+30: socket stays ESTAB with cumulative bytes=200000 (0 delta) -> NOT downloading!
+        active_then_idle.lastrcv = 15100
+        downloading, settling = tracker.update([stale_keepalive, active_then_idle], now=t0 + 30.0)
+        self.assertFalse(downloading)
+        self.assertTrue(settling)
+
+        # After settle window at t0+90: socket still ESTAB with 200000 bytes -> completely safe!
+        active_then_idle.lastrcv = 75100
+        downloading, settling = tracker.update([stale_keepalive, active_then_idle], now=t0 + 90.0)
+        self.assertFalse(downloading)
+        self.assertFalse(settling)
+
+    def test_session_tracker_quiet_gateway_keepalive_becomes_idle_early(self):
+        tracker = SessionTracker(idle_threshold_seconds=300.0, max_heartbeat_rate_bps=5.0, quiet_socket_seconds=60.0)
+        t0 = 1000.0
+
+        # Gateway opens upstream socket for a single HTTP request (650 bytes), then keeps it pooled with 0 traffic
+        pooled_conn = ConnectionInfo(
+            local_ip="10.244.3.24", local_port=30000,
+            remote_ip="10.244.2.26", remote_port=51234,
+            state="ESTAB", bytes_received=650, lastrcv=200,
+        )
+        active, idle = tracker.update([pooled_conn], now=t0)
+        self.assertEqual((active, idle), (1, 0))
+
+        # 65s later: 0 additional bytes received and lastrcv >= 60s -> classified idle without waiting 300s
+        pooled_conn.lastrcv = 65200
+        active, idle = tracker.update([pooled_conn], now=t0 + 65.0)
+        self.assertEqual((active, idle), (0, 1))
+
     def test_evaluate_activity(self):
         # Case 1: Active players in world -> blocks
         eval1 = evaluate_activity(
