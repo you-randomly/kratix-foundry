@@ -54,6 +54,8 @@ On first run, the bot will sync commands to your guild. Use `/vtt-help` in Disco
 - `/vtt-status`: View Foundry instance status (active/standby, players).
 - `/vtt-create`: Create a new Foundry instance resource.
 - `/vtt-update`: Activate or deactivate an instance.
+- `/vtt-backup`: Request a backup archive of an instance sent via DM.
+- `/vtt-password`: Show or rotate admin passwords.
 - `/vtt-delete`: Delete an instance you created.
 
 ## Project Structure

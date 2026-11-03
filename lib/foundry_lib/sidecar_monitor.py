@@ -473,6 +473,9 @@ async def async_monitor_main() -> None:
     ack_snooze = float(
         os.getenv("ACK_SNOOZE_SECONDS", str(DEFAULT_ACK_SNOOZE_SECONDS))
     )
+    data_root = os.getenv("FOUNDRY_DATA_ROOT", "/data")
+    foundry_version = os.getenv("FOUNDRY_VERSION") or None
+    backup_token_ttl = int(os.getenv("BACKUP_TOKEN_TTL_SECONDS", "3600"))
 
     if not instance_name:
         print("FATAL: INSTANCE_NAME env var not set", flush=True)
@@ -511,14 +514,38 @@ async def async_monitor_main() -> None:
     def trigger_wake() -> None:
         loop.call_soon_threadsafe(wake_event.set)
 
+    def _load_backup_keys() -> List[str]:
+        keys: List[str] = []
+        if os.path.exists(admin_key_path):
+            try:
+                with open(admin_key_path, "r", encoding="utf-8") as fh:
+                    mounted_key = fh.read().strip()
+                if mounted_key:
+                    keys.append(mounted_key)
+            except OSError:
+                pass
+        if startup_admin_key and startup_admin_key.strip():
+            keys.append(startup_admin_key.strip())
+        return keys
+
     # Start reverse proxy server
     from aiohttp import web
+    from foundry_lib.backup import BackupManager
     from foundry_lib.proxy import create_proxy_app
+
+    backup_manager = BackupManager(
+        instance_name=instance_name,
+        data_root=data_root,
+        key_provider=_load_backup_keys,
+        foundry_version=foundry_version,
+        token_ttl_seconds=backup_token_ttl,
+    )
 
     app = create_proxy_app(
         coordinator=presence_coordinator,
         upstream_url=upstream_url,
         on_state_change=trigger_wake,
+        backup_manager=backup_manager,
     )
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
