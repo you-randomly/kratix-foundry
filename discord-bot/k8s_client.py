@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
+from kubernetes.stream import stream
 
 from config import (
     CRD_GROUP,
@@ -917,3 +918,63 @@ def patch_instance_annotations(name: str, annotations: Dict[str, Any], namespace
     except ApiException as e:
         error_msg = str(e.reason) if hasattr(e, 'reason') else str(e)
         return {'success': False, 'message': f'Failed to patch annotations: {error_msg}'}
+
+
+POD_EXEC_TIMEOUT_SECONDS = 5
+
+
+def _is_container_running(pod: Any, container_name: str) -> bool:
+    """Return True if the pod is active (not terminating) and the target container is running."""
+    if not pod or not getattr(pod, 'status', None):
+        return False
+    if getattr(pod.status, 'phase', None) != 'Running':
+        return False
+    metadata = getattr(pod, 'metadata', None)
+    if metadata and getattr(metadata, 'deletion_timestamp', None):
+        return False
+    for cs in getattr(pod.status, 'container_statuses', None) or []:
+        if getattr(cs, 'name', None) == container_name:
+            state = getattr(cs, 'state', None)
+            return bool(state and getattr(state, 'running', None) is not None)
+    return False
+
+
+def get_running_admin_password(
+    instance_name: str,
+    namespace: Optional[str] = None,
+    timeout: int = POD_EXEC_TIMEOUT_SECONDS,
+) -> Optional[str]:
+    """Read the admin password actually in use by the running pod.
+
+    The pod receives the password via an env var resolved at startup, so after a
+    rotation the Secret may differ until the pod restarts.
+    """
+    if not k8s_api:
+        return None
+    ns = namespace or FOUNDRY_NAMESPACE
+    try:
+        core_api = client.CoreV1Api()
+        pods = core_api.list_namespaced_pod(
+            ns,
+            label_selector=f"app=foundry-vtt,instance={instance_name}",
+            _request_timeout=timeout,
+        ).items
+        pods = [p for p in pods if _is_container_running(p, 'foundry-vtt')]
+        if not pods:
+            return None
+        out = stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pods[0].metadata.name,
+            ns,
+            container='foundry-vtt',
+            command=['printenv', 'FOUNDRY_ADMIN_KEY'],
+            stderr=False,
+            stdin=False,
+            stdout=True,
+            tty=False,
+            _request_timeout=timeout,
+        )
+        return (out or '').rstrip('\r\n') or None
+    except Exception as e:
+        print(f"Could not read running admin password for {instance_name}: {e}")
+        return None
