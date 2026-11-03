@@ -238,6 +238,8 @@ spec:
                   env:
                     - name: INSTANCE_NAME
                       value: ${schema.metadata.name}
+                    - name: FOUNDRY_VERSION
+                      value: ${schema.spec.foundryVersion}
                     - name: LICENSE_NAME
                       value: ${schema.spec.licenseRef.name}
                     - name: POD_NAMESPACE
@@ -312,6 +314,15 @@ spec:
             - name: ${license.spec.gateway.parentRef.name}
               namespace: ${license.spec.gateway.parentRef.namespace}
           rules:
+            - matches:
+                - path:
+                    type: PathPrefix
+                    value: /__platform/backups/download
+              timeouts:
+                backendRequest: 0s
+              backendRefs:
+                - name: foundry-${schema.metadata.name}
+                  port: 80
             - timeouts:
                 backendRequest: 0s
               backendRefs:

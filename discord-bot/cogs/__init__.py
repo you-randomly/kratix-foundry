@@ -10,4 +10,5 @@ COGS = [
     "cogs.update",
     "cogs.delete",
     "cogs.password",
+    "cogs.backup",
 ]

@@ -41,6 +41,8 @@ class HelpCog(commands.Cog):
                 '• `/vtt-status`: View all instances and see who is currently live.\n'
                 '• `/vtt-create`: Create a new instance (world) with custom specs.\n'
                 '• `/vtt-update`: Switch the license to a different instance.\n'
+                '• `/vtt-backup`: Request a `.zip` backup of your instance via DM.\n'
+                '• `/vtt-password`: View or reset admin passwords.\n'
                 '• `/vtt-delete`: Remove an instance (only for the creator).'
             ),
             inline=False

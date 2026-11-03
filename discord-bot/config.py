@@ -30,3 +30,11 @@ CACHE_TTL_SECONDS = 5  # How long to cache autocomplete results
 CRD_CACHE_TTL_SECONDS = 300  # 5 minutes for CRD schema cache
 VERSION_CACHE_TTL = 3600  # 1 hour for Foundry version cache
 LICENSE_CACHE_TTL = 300  # 5 minutes for License cache
+
+# Backup settings
+DISCORD_DM_MAX_ATTACHMENT_BYTES = int(os.getenv('DISCORD_DM_MAX_ATTACHMENT_BYTES', '9500000'))
+BACKUP_SERVICE_PORT = int(os.getenv('BACKUP_SERVICE_PORT', '80'))
+BACKUP_INTERNAL_URL_TEMPLATE = os.getenv(
+    'BACKUP_INTERNAL_URL_TEMPLATE',
+    'http://foundry-{instance}.{namespace}.svc.cluster.local:{port}',
+)

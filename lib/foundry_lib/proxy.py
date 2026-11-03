@@ -3,9 +3,23 @@ Async HTTP + WebSocket reverse proxy for Foundry VTT with injected "Are you stil
 """
 
 import asyncio
+import concurrent.futures
+import io
 import re
-from typing import Callable, Optional, Set
+import threading
+from typing import Any, Callable, Optional, Set
 
+from foundry_lib.backup import (
+    DEFAULT_DISCORD_MAX_BYTES,
+    STREAM_CHUNK_BYTES,
+    VALID_BACKUP_SCOPES,
+    BackupError,
+    BackupManager,
+    BackupStreamCancelled,
+    collect_backup_plan,
+    sanitize_filename,
+    write_backup_zip,
+)
 from foundry_lib.presence import PresenceCoordinator
 
 SCRIPT_TAG = b'<script src="/__platform/presence.js" defer></script>'
@@ -366,10 +380,73 @@ def _connection_header_tokens(headers) -> Set[str]:
     return tokens
 
 
+class _AsyncQueueStreamWriter(io.RawIOBase):
+    """Non-seekable buffered writer forwarding 64 KiB chunks from a worker thread to an asyncio.Queue."""
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: "asyncio.Queue[Optional[bytes]]",
+        cancel_event: threading.Event,
+        chunk_size: int = STREAM_CHUNK_BYTES,
+    ):
+        self._loop = loop
+        self._queue = queue
+        self._cancel_event = cancel_event
+        self._chunk_size = chunk_size
+        self._buf = bytearray()
+        self._pos = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def tell(self) -> int:
+        return self._pos
+
+    def _put_chunk(self, chunk: bytes) -> None:
+        if self._cancel_event.is_set():
+            raise BackupStreamCancelled("Stream cancelled")
+        fut = asyncio.run_coroutine_threadsafe(self._queue.put(chunk), self._loop)
+        while True:
+            if self._cancel_event.is_set():
+                fut.cancel()
+                raise BackupStreamCancelled("Stream cancelled")
+            try:
+                fut.result(timeout=0.2)
+                return
+            except concurrent.futures.TimeoutError:
+                continue
+
+    def write(self, b: Any) -> int:
+        if self._cancel_event.is_set():
+            raise BackupStreamCancelled("Stream cancelled")
+        data = bytes(b)
+        n = len(data)
+        if n == 0:
+            return 0
+        self._pos += n
+        self._buf.extend(data)
+        while len(self._buf) >= self._chunk_size:
+            out = bytes(self._buf[: self._chunk_size])
+            del self._buf[: self._chunk_size]
+            self._put_chunk(out)
+        return n
+
+    def flush_remaining(self) -> None:
+        if self._buf and not self._cancel_event.is_set():
+            out = bytes(self._buf)
+            self._buf.clear()
+            self._put_chunk(out)
+
+
 def create_proxy_app(
     coordinator: PresenceCoordinator,
     upstream_url: str = "http://127.0.0.1:30000",
     on_state_change: Optional[Callable[[], None]] = None,
+    backup_manager: Optional[BackupManager] = None,
 ):
     """Build the aiohttp.web.Application wrapping Foundry VTT on upstream_url."""
     from aiohttp import ClientConnectorError, ClientSession, ClientTimeout, WSMsgType, web
@@ -430,6 +507,156 @@ def create_proxy_app(
         if client_id:
             coordinator.remove_tab(client_id)
         return web.Response(status=204)
+
+    async def handle_create_backup(request: web.Request) -> web.Response:
+        if backup_manager is None:
+            return web.json_response({"error": "Backup service is not configured"}, status=503)
+
+        ok, auth_reason = backup_manager.verify_bearer_auth(request.headers.get("Authorization", ""))
+        if not ok:
+            if auth_reason == "unavailable":
+                return web.json_response(
+                    {"error": "Instance credentials are still initializing"},
+                    status=503,
+                )
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        try:
+            body_text = await request.text()
+            body_data = await request.json() if body_text.strip() else {}
+            if not isinstance(body_data, dict):
+                return web.json_response({"error": "Request body must be a JSON object"}, status=400)
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        scope = str(body_data.get("scope") or "default").strip().lower()
+        if scope not in VALID_BACKUP_SCOPES:
+            return web.json_response(
+                {"error": f"Unsupported backup scope '{scope}'"},
+                status=400,
+            )
+
+        try:
+            raw_max = int(body_data.get("maxInlineBytes", DEFAULT_DISCORD_MAX_BYTES))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "maxInlineBytes must be an integer"}, status=400)
+        max_inline_bytes = max(0, min(raw_max, 50_000_000))
+
+        try:
+            info = await asyncio.to_thread(
+                backup_manager.prepare_backup,
+                scope,
+                max_inline_bytes,
+            )
+        except BackupError as exc:
+            return web.json_response({"error": str(exc)}, status=503)
+        except Exception as exc:
+            return web.json_response({"error": f"Failed to prepare backup: {exc}"}, status=500)
+
+        return web.json_response(info)
+
+    async def handle_download_backup(request: web.Request) -> web.StreamResponse:
+        if backup_manager is None:
+            return web.json_response({"error": "Backup service is not configured"}, status=503)
+
+        token = request.match_info.get("token", "").strip()
+        raw_fn = request.match_info.get("filename", "").strip()
+        safe_fn = sanitize_filename(raw_fn)
+
+        payload, reason = backup_manager.verify_download_token(token, safe_fn)
+        if payload is None:
+            if reason == "expired":
+                return web.json_response(
+                    {
+                        "error": (
+                            "This backup download link has expired. "
+                            "Request a fresh backup in Discord with /vtt-backup."
+                        )
+                    },
+                    status=410,
+                )
+            if reason == "unavailable":
+                return web.json_response(
+                    {"error": "Instance credentials are still initializing, please retry shortly."},
+                    status=503,
+                )
+            return web.json_response({"error": "Invalid backup download token."}, status=403)
+
+        resp_headers = {
+            "Content-Type": "application/zip",
+            "Content-Disposition": f'attachment; filename="{safe_fn}"',
+            "Cache-Control": "private, no-store",
+            "X-Robots-Tag": "noindex, nofollow",
+        }
+
+        user_agent = request.headers.get("User-Agent", "").lower()
+        if request.method == "HEAD" or "discordbot" in user_agent:
+            return web.Response(status=200, headers=resp_headers, body=b"")
+
+        cached_inline = backup_manager.pop_cached_inline(token)
+        if cached_inline is not None:
+            resp_headers["Content-Length"] = str(len(cached_inline))
+            return web.Response(status=200, headers=resp_headers, body=cached_inline)
+
+        sem = backup_manager.get_stream_semaphore()
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=10.0)
+        except asyncio.TimeoutError:
+            return web.json_response(
+                {"error": "Too many concurrent backup downloads in progress. Please try again in a moment."},
+                status=429,
+            )
+
+        try:
+            loop = asyncio.get_running_loop()
+            chunk_queue: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue(maxsize=8)
+            cancel_event = threading.Event()
+            scope = str(payload["scope"])
+
+            def _produce_zip() -> None:
+                writer = _AsyncQueueStreamWriter(loop, chunk_queue, cancel_event)
+                try:
+                    plan = collect_backup_plan(
+                        data_root=backup_manager.data_root,
+                        instance_name=backup_manager.instance_name,
+                        scope=scope,
+                        foundry_version=backup_manager.foundry_version,
+                    )
+                    write_backup_zip(plan, writer, cancel_check=cancel_event.is_set)
+                    writer.flush_remaining()
+                finally:
+                    if not cancel_event.is_set():
+                        asyncio.run_coroutine_threadsafe(chunk_queue.put(None), loop).result(timeout=5.0)
+
+            producer_task = asyncio.create_task(asyncio.to_thread(_produce_zip))
+
+            stream_resp = web.StreamResponse(status=200, headers=resp_headers)
+            await stream_resp.prepare(request)
+            try:
+                while True:
+                    chunk = await chunk_queue.get()
+                    if chunk is None:
+                        break
+                    await stream_resp.write(chunk)
+                await producer_task
+                await stream_resp.write_eof()
+            finally:
+                cancel_event.set()
+                while not chunk_queue.empty():
+                    try:
+                        chunk_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                try:
+                    await producer_task
+                except BackupStreamCancelled:
+                    pass
+                except Exception as stream_err:
+                    print(f"WARN: backup stream interrupted: {stream_err}", flush=True)
+
+            return stream_resp
+        finally:
+            sem.release()
 
     async def _proxy_websocket(request: web.Request, session: ClientSession) -> web.StreamResponse:
         target_url = URL(f"{upstream_base}{request.raw_path}", encoded=True)
@@ -602,5 +829,7 @@ def create_proxy_app(
     app.router.add_post("/__platform/ack", handle_ack)
     app.router.add_post("/__platform/release", handle_release)
     app.router.add_post("/__platform/leave", handle_leave)
+    app.router.add_post("/__platform/backups", handle_create_backup)
+    app.router.add_get("/__platform/backups/download/{token}/{filename}", handle_download_backup)
     app.router.add_route("*", "/{path_info:.*}", handle_proxy)
     return app
