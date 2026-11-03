@@ -39,13 +39,6 @@ rules:
   - apiGroups: ["external-secrets.io"]
     resources: ["externalsecrets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Read pods and exec to show the admin password in use by a running instance
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
   # Read namespaces for context
   - apiGroups: [""]
     resources: ["namespaces"]
@@ -62,6 +55,34 @@ subjects:
 roleRef:
   kind: ClusterRole
   name: foundry-discord-bot
+  apiGroup: rbac.authorization.k8s.io
+---
+# Namespaced Role/RoleBinding restricting pod read & exec strictly to foundry-vtt
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: foundry-discord-bot-pod-exec
+  namespace: foundry-vtt
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: foundry-discord-bot-pod-exec
+  namespace: foundry-vtt
+subjects:
+  - kind: ServiceAccount
+    name: foundry-discord-bot
+    namespace: foundry-bot
+roleRef:
+  kind: Role
+  name: foundry-discord-bot-pod-exec
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1

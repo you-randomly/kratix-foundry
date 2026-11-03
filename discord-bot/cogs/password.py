@@ -2,6 +2,7 @@
 /vtt-password command cog - Admin password management via External Secrets Operator and kro.
 """
 
+import asyncio
 from typing import List, Optional
 import discord
 from discord import app_commands
@@ -92,8 +93,9 @@ class PasswordCog(commands.Cog):
 
         target_label = "Default Password"
         instance = None
+        namespace = FOUNDRY_NAMESPACE
         if name:
-            instance = k8s.get_foundry_instance(name)
+            instance = await asyncio.to_thread(k8s.get_foundry_instance, name)
             if not instance:
                 await interaction.followup.send(f"❌ Instance **{name}** not found.", ephemeral=True)
                 return
@@ -101,22 +103,44 @@ class PasswordCog(commands.Cog):
             if owner_id and owner_id != str(interaction.user.id):
                 await interaction.followup.send("❌ You do not have permission to view the password for this instance.", ephemeral=True)
                 return
+            namespace = instance.get('metadata', {}).get('namespace', FOUNDRY_NAMESPACE)
             secret_name = k8s.password_secret_name(instance)
             target_label = f"Instance '{name}'"
         else:
             secret_name = f"foundry-password-user-{interaction.user.id}"
 
-        password = k8s.get_admin_password_plaintext(secret_name, FOUNDRY_NAMESPACE)
+        password = await asyncio.to_thread(k8s.get_admin_password_plaintext, secret_name, namespace)
         pending_note = ""
         if instance and password:
-            namespace = instance.get('metadata', {}).get('namespace', FOUNDRY_NAMESPACE)
-            running = k8s.get_running_admin_password(name, namespace)
+            running = await asyncio.to_thread(k8s.get_running_admin_password, name, namespace)
             if running and running != password:
                 pending_note = (
                     "\n⚠️ A password reset is pending. The instance is still using the password below; "
                     "the new password will apply once it restarts (use `/vtt-password show` again afterwards)."
                 )
                 password = running
+        elif not instance and password:
+            user_id = str(interaction.user.id)
+            instances = await asyncio.to_thread(k8s.get_foundry_instances, namespace)
+            pending_instances = []
+            for inst in instances:
+                if k8s.get_instance_owner_id(inst) != user_id:
+                    continue
+                if k8s.password_secret_name(inst) != secret_name:
+                    continue
+                inst_name = inst.get('metadata', {}).get('name')
+                inst_ns = inst.get('metadata', {}).get('namespace', namespace)
+                if not inst_name:
+                    continue
+                running = await asyncio.to_thread(k8s.get_running_admin_password, inst_name, inst_ns)
+                if running and running != password:
+                    pending_instances.append(inst_name)
+            if pending_instances:
+                inst_list = ", ".join(f"**{n}**" for n in pending_instances)
+                pending_note = (
+                    f"\n⚠️ Pending restart on: {inst_list}. Those instance(s) are still using your previous password "
+                    "until idle (use `/vtt-password show name:<instance>` to view an instance's active password)."
+                )
         if not password:
             await interaction.followup.send(
                 f"❌ Could not retrieve password for `{secret_name}`. It may still be generating.",

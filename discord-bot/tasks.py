@@ -132,8 +132,9 @@ async def check_password_notifications(bot):
                 if not creator_id and fp_name.startswith("foundry-password-user-"):
                     creator_id = fp_name[len("foundry-password-user-"):]
                 
+                instance = None
                 if not creator_id and instance_name:
-                    instance = k8s.get_foundry_instance(instance_name, namespace)
+                    instance = await asyncio.to_thread(k8s.get_foundry_instance, instance_name, namespace)
                     if instance:
                         creator_id = k8s.get_instance_owner_id(instance)
                 
@@ -141,7 +142,7 @@ async def check_password_notifications(bot):
                     continue
                 
                 # Retrieve plaintext password
-                password = k8s.get_admin_password_plaintext(fp_name, namespace)
+                password = await asyncio.to_thread(k8s.get_admin_password_plaintext, fp_name, namespace)
                 if not password:
                     continue
                 
@@ -153,10 +154,49 @@ async def check_password_notifications(bot):
                             title = '🔑 Admin Password for Foundry Instance'
                             description = f"The admin password for instance **{instance_name}** has been generated/reset."
                             color = discord.Color.green()
+                            if instance is None:
+                                instance = await asyncio.to_thread(k8s.get_foundry_instance, instance_name, namespace)
+                            running = await asyncio.to_thread(k8s.get_running_admin_password, instance_name, namespace)
+                            if running and running != password:
+                                activity = (
+                                    (instance.get('metadata', {}).get('annotations', {}) or {}).get('foundry.platform/activity', 'idle')
+                                    if instance else 'idle'
+                                )
+                                if activity != 'idle':
+                                    description += (
+                                        f"\n\n⏳ **{instance_name}** is currently busy (`{activity}`) and continues using its "
+                                        f"previous password until safe to restart. Use `/vtt-password show name:{instance_name}` "
+                                        "if you need the currently active password."
+                                    )
+                                else:
+                                    description += (
+                                        f"\n\n⏳ **{instance_name}** will restart shortly to apply this password "
+                                        f"(use `/vtt-password show name:{instance_name}` if you need the currently active password before it restarts)."
+                                    )
                         else:
                             title = '🔑 Default Admin Password'
                             description = "Your **default** admin password has been generated/reset."
                             color = discord.Color.blue()
+                            instances = await asyncio.to_thread(k8s.get_foundry_instances, namespace)
+                            pending_instances = []
+                            for inst in instances:
+                                if k8s.get_instance_owner_id(inst) != str(creator_id):
+                                    continue
+                                if k8s.password_secret_name(inst) != fp_name:
+                                    continue
+                                inst_name = inst.get('metadata', {}).get('name')
+                                inst_ns = inst.get('metadata', {}).get('namespace', namespace)
+                                if not inst_name:
+                                    continue
+                                running = await asyncio.to_thread(k8s.get_running_admin_password, inst_name, inst_ns)
+                                if running and running != password:
+                                    pending_instances.append(inst_name)
+                            if pending_instances:
+                                inst_list = ", ".join(f"**{n}**" for n in pending_instances)
+                                description += (
+                                    f"\n\n⏳ Pending restart on: {inst_list}. Those instance(s) continue using your previous "
+                                    "password until safe to restart (use `/vtt-password show name:<instance>` to view an instance's active password)."
+                                )
                             
                         embed = discord.Embed(title=title, description=description, color=color)
                         
@@ -166,12 +206,13 @@ async def check_password_notifications(bot):
                         embed.add_field(name="Password", value=f"||`{password}`||", inline=False)
                         
                         if instance_name:
-                            instance = k8s.get_foundry_instance(instance_name, namespace)
+                            if instance is None:
+                                instance = await asyncio.to_thread(k8s.get_foundry_instance, instance_name, namespace)
                             if instance:
                                 license_name = instance.get('spec', {}).get('licenseRef', {}).get('name')
                                 base_domain = "lab.jake-watson.co.uk"
                                 if license_name:
-                                    lic = k8s.get_foundry_license(license_name, namespace)
+                                    lic = await asyncio.to_thread(k8s.get_foundry_license, license_name, namespace)
                                     if lic:
                                         base_domain = lic.get('spec', {}).get('gateway', {}).get('baseDomain', base_domain)
                                 embed.add_field(name="URL", value=f"https://{instance_name}.{base_domain}", inline=False)
